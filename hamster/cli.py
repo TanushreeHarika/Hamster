@@ -5,7 +5,7 @@ from hamster.agent import initial_messages, run_agent_turn
 from hamster.config import load_config
 from hamster.openrouter import OpenRouterClient
 from hamster.tools import configure_sandbox
-from hamster.ui import clear_screen, print_help, print_logo, prompt_user
+from hamster.ui import clear_screen, print_exit_logo, print_help, print_logo, prompt_user
 
 
 def _ensure_foundation(project_root: Path) -> None:
@@ -38,13 +38,14 @@ def main() -> None:
         try:
             user_input = prompt_user("[bold gold3]hamster>[/] ").strip()
         except (EOFError, KeyboardInterrupt):
-            print("\nBye.")
+            print()
+            print_exit_logo()
             return
 
         if not user_input:
             continue
         if user_input == "/exit":
-            print("Bye.")
+            print_exit_logo()
             return
         if user_input == "/help":
             print_help()
