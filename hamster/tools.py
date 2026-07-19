@@ -7,12 +7,15 @@ import shlex
 import subprocess
 from pathlib import Path
 
+from src.security import assert_sandbox_path
+from src.transactions import TransactionManager
 from hamster.ui import (
     confirm,
     render_action_summary,
     render_diff,
     render_files_summary,
     render_security_violation,
+    sandbox_status,
     status,
 )
 
@@ -60,7 +63,10 @@ def _security_violation(message: str) -> str:
 
 def _resolve_inside_sandbox(filepath: str) -> str:
     root = _sandbox_root()
-    absolute_path = os.path.abspath(os.path.join(root, filepath))
+    try:
+        absolute_path = assert_sandbox_path(filepath, root=root)
+    except Exception as exc:
+        raise SandboxViolation(str(exc)) from exc
     if not _is_inside_sandbox(absolute_path):
         raise SandboxViolation(
             f"Blocked sandbox escape attempt. Requested={filepath!r}; resolved={absolute_path!r}; sandbox={root!r}."
@@ -107,7 +113,7 @@ def run_sandbox_command(command: str) -> str:
     if not confirm(f"🐹 Hamster wants to run command '{command}'. Allow? (y/n):"):
         return "User denied run_sandbox_command."
 
-    with status("Running sandbox command..."):
+    with sandbox_status("🖥️  Running sandbox command..."):
         result = subprocess.run(
             shlex.split(command),
             cwd=_sandbox_root(),
@@ -126,7 +132,7 @@ def search_codebase(query: str) -> str:
     if not confirm(f"🐹 Hamster wants to search the codebase for '{query}'. Allow? (y/n):"):
         return "User denied search_codebase."
 
-    with status("Searching sandbox with ripgrep..."):
+    with sandbox_status("🔍 Searching sandbox with ripgrep..."):
         result = subprocess.run(
             ["rg", "--line-number", "--column", "--", query, root],
             text=True,
@@ -150,7 +156,7 @@ def read_file(filepath: str) -> str:
     if not confirm(f"🐹 Hamster wants to read file '{filepath}'. Allow? (y/n):"):
         return "User denied read_file."
 
-    with status("Reading sandbox file..."):
+    with sandbox_status("📄 Reading sandbox file..."):
         if not os.path.isfile(path):
             raise FileNotFoundError(f"File not found inside sandbox: {filepath}")
         return Path(path).read_text(encoding="utf-8")
@@ -176,8 +182,13 @@ def edit_file_patch(filepath: str, target_text: str, replacement_text: str) -> s
     if not confirm(f"🐹 Hamster wants to edit '{filepath}'. Allow? (y/n):"):
         return "User denied edit_file_patch."
 
-    with status("Applying sandbox patch..."):
-        Path(path).write_text(updated, encoding="utf-8")
+    transaction = TransactionManager([path])
+    try:
+        with sandbox_status("✏️  Applying sandbox patch..."):
+            Path(path).write_text(updated, encoding="utf-8")
+    except Exception:
+        transaction.rollback()
+        raise
     return f"Patched {filepath}: replaced 1 occurrence."
 
 

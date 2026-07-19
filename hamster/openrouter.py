@@ -7,7 +7,7 @@ from typing import Any
 
 import requests
 
-from hamster.config import Config
+from hamster.config import Config, DEFAULT_OPENROUTER_MODEL
 from hamster.tools import TOOL_SCHEMAS
 
 
@@ -66,7 +66,21 @@ class OpenRouterClient:
             timeout=120,
             stream=True,
         )
-        response.raise_for_status()
+        try:
+            response.raise_for_status()
+        except requests.HTTPError as exc:
+            if response.status_code == 404 and self.config.model != DEFAULT_OPENROUTER_MODEL:
+                payload["model"] = DEFAULT_OPENROUTER_MODEL
+                response = requests.post(
+                    OPENROUTER_CHAT_URL,
+                    headers=headers,
+                    json=payload,
+                    timeout=120,
+                    stream=True,
+                )
+                response.raise_for_status()
+            else:
+                raise exc
 
         result = StreamResult()
         for raw_line in response.iter_lines(decode_unicode=True):

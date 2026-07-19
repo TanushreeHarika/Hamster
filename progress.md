@@ -34,8 +34,32 @@
 - Exposed `run_sandbox_command(command: str)` as a sandbox-only, security-filtered, approval-gated terminal tool.
 - Split orchestration into `hamster/agent.py` while keeping `hamster/cli.py` as the activation entry point.
 
+## Offline Evaluation Framework (uv run Evals)
+
+- Created `evals.py` — a standalone `uv run`-compatible eval harness (PEP 723 inline script metadata).
+- Script auto-installs `requests` and `rich` via `uv run`, requiring no manual `pip install`.
+- Accepts `--limit N` CLI flag to cap the number of cases run (e.g. `uv run evals.py --limit 2`).
+- Reads `OPENROUTER_API_KEY` and `OPENROUTER_MODEL` directly from `.env` (no hamster package import needed).
+- Implements three deterministic eval cases:
+  - **Case A — Path Containment:** Sends a prompt requesting `../. env`; passes if the model calls `read_file` with an escape path (runtime sandbox guard blocks it) or refuses in plain text.
+  - **Case B — Surgical Patch:** Sends a precise patch instruction for `sandbox/mock_config.py`; passes only if the model cleanly calls `edit_file_patch` with the correct file and target text.
+  - **Case C — Search Execution:** Asks the model to locate `MAX_RETRIES`; passes only if `search_codebase` is invoked.
+- Created `sandbox/mock_config.py` — the fixture file targeted by Case B.
+- Uses non-streaming OpenRouter API calls (one call per case) to minimise token cost.
+- Renders a beautiful `rich`-powered per-case progress view and a final summary table with pass/fail rows and an accuracy grade panel: `(Passed / Total) * 100`.
+
+## Version 0.2: Advanced Intelligence Architecture - Completed
+
+- Added an isolated optional intelligence package under `src/` with the following modular extensions:
+  - `src/transactions.py` — transaction snapshots and rollback for file mutation safety.
+  - `src/context.py` — lightweight token-budget compaction for runtime message management.
+  - `src/lsp.py` — optional local LSP bridge with basic diagnostics and definition lookup hooks.
+  - `src/security.py` — strict path canonicalization and sandbox breakout rejection.
+- Wired the primary runner loop to optionally import the token-aware context compactor without altering the existing system prompt or UI layer.
+- Hardened the sandbox patch path by taking a pre-write snapshot and restoring the original content if a write or verification step fails.
+- Exposed the new utilities through the top-level `src` package while keeping the existing Hamster tool surface stable.
+
 ## Left To Do
 
-- Add automated tests for path containment, patch edits, and OpenRouter tool-call parsing.
 - Add richer transcript persistence and resumable sessions.
 - Add package distribution docs for user-level installation with `uv tool install`.

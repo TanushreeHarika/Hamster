@@ -5,7 +5,12 @@ from typing import Any
 
 from hamster.openrouter import OpenRouterClient, StreamResult
 from hamster.tools import TOOL_FUNCTIONS
-from hamster.ui import print_assistant_delta, render_model_error, render_tool_result, status
+from hamster.ui import print_assistant_delta, render_model_error, render_tool_result, remote_status, status
+
+try:
+    from src.context import compact_context
+except Exception:  # pragma: no cover - optional utility import
+    compact_context = None
 
 
 SYSTEM_PROMPT = """You are Hamster, a production-grade CLI software engineering agent.
@@ -41,9 +46,12 @@ def execute_tool_call(tool_call: dict[str, Any]) -> dict[str, Any]:
 
 def run_agent_turn(client: OpenRouterClient, messages: list[dict[str, Any]], max_failures: int) -> None:
     failures = 0
+    if compact_context is not None:
+        messages = compact_context(messages, token_budget=4000)
+
     while True:
         final_result: StreamResult | None = None
-        waiting = status("Waiting on OpenRouter model response...")
+        waiting = remote_status("⏳ Waiting on OpenRouter model response...")
         waiting_active = False
         try:
             waiting.__enter__()
