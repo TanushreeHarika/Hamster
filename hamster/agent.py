@@ -18,7 +18,17 @@ Your file tools are physically restricted to ./sandbox/ and security violations 
 You may run terminal commands only through run_sandbox_command, which is restricted to ./sandbox/ and blocks destructive syntax before approval.
 You may use web_search only for technical documentation, API specifications, syntax examples, or library verification.
 Never claim to have inspected files unless you used read_file or search_codebase.
-Prefer small, surgical edits through edit_file_patch. If a tool returns an error or SECURITY VIOLATION, adjust your next step."""
+Prefer small, surgical edits through edit_file_patch. If a tool returns an error or SECURITY VIOLATION, adjust your next step.
+Note: search_codebase requires ripgrep (rg) to be installed. If missing, install with: brew install ripgrep
+
+CRITICAL — YOUR WORKING DIRECTORY:
+- You are already running INSIDE ./sandbox/. Do NOT reference "sandbox/" in paths.
+- To list all files: run_sandbox_command("ls -la") or run_sandbox_command("find . -type f")
+- NEVER use "ls ./sandbox/" — that tries to enter a non-existent nested sandbox directory.
+- NEVER use "ls ./sandbox" as a path argument to read_file or search_codebase.
+- Correct file access: read_file("README.md") or read_file("hamster/agent.py")
+- Wrong file access: read_file("sandbox/README.md") — this will FAIL.
+- If a tool returns "No files found" or "directory not found", use run_sandbox_command("find . -type f | head -30") to verify what exists."""
 
 
 def initial_messages() -> list[dict[str, Any]]:

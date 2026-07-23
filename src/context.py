@@ -40,23 +40,53 @@ class CompactContextManager:
         collapsed.extend(system_messages)
 
         for message in middle_messages:
-            collapsed.append(
-                {
-                    "role": message.get("role", "assistant"),
-                    "content": self._compress_middle_message(message),
-                }
-            )
+            collapsed.append(self._compress_middle_message(message))
 
         collapsed.extend(tail_messages)
         return collapsed
 
-    def _compress_middle_message(self, message: dict[str, Any]) -> str:
-        content = str(message.get("content", ""))
+    def _compress_middle_message(self, message: dict[str, Any]) -> dict[str, Any]:
+        """Return a compacted copy of a middle-history message.
+
+        Rules:
+        - ``tool`` messages must keep ``tool_call_id`` and ``name`` so OpenRouter
+          can match them to the originating assistant tool_call.
+        - ``assistant`` messages that carry ``tool_calls`` are collapsed to a plain
+          summary string; stripping the ``tool_calls`` list avoids dangling-reference
+          errors when the paired tool result is also being compacted.
+        - All other messages are truncated to 80 tokens with a prefix note.
+        """
+        role = message.get("role", "assistant")
+        content = str(message.get("content") or "")
         tokens = lightweight_tokenize(content)
+
+        # tool messages: always keep required pairing fields
+        if role == "tool":
+            compressed: dict[str, Any] = {
+                "role": "tool",
+                "tool_call_id": message.get("tool_call_id", ""),
+                "name": message.get("name", ""),
+                "content": (
+                    content if len(tokens) <= 120
+                    else "[condensed] " + " ".join(tokens[:80]) + " ..."
+                ),
+            }
+            return compressed
+
+        # assistant messages with tool_calls: collapse to a plain summary
+        if role == "assistant" and message.get("tool_calls"):
+            tool_names = ", ".join(
+                tc.get("function", {}).get("name", "?")
+                for tc in (message.get("tool_calls") or [])
+            )
+            return {"role": "assistant", "content": f"[condensed tool call: {tool_names}]"}
+
+        # everything else: plain text truncation
         if len(tokens) <= 120:
-            return content
-        return "[condensed history] " + " ".join(tokens[:80]) + " ..."
+            return {"role": role, "content": content}
+        return {"role": role, "content": "[condensed history] " + " ".join(tokens[:80]) + " ..."}
 
 
 def compact_context(messages: list[dict[str, Any]], *, token_budget: int = 4000) -> list[dict[str, Any]]:
     return CompactContextManager(token_budget=token_budget).compact_messages(messages)
+

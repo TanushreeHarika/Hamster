@@ -90,6 +90,7 @@ def print_logo() -> None:
     metrics.add_row("Tools", "search_codebase · read_file · edit_file_patch · web_search · run_sandbox_command")
     metrics.add_row("Boundary", "./sandbox only — absolute path containment enforced")
     metrics.add_row("Approval", "hard y/n gate before every tool call and network action")
+    metrics.add_row("Requirements", "ripgrep (rg) for search — install with: brew install ripgrep")
     console.print(Panel(metrics, border_style="gold3", title="[bold gold3]Ready[/]", title_align="left"))
 
 
@@ -114,30 +115,22 @@ def print_help() -> None:
     table.add_column("Command", style="bold cyan", no_wrap=True)
     table.add_column("Action", style="white")
     table.add_row("/help", "Show this command guide")
+    table.add_row("/files", "List all files in sandbox (diagnostic)")
     table.add_row("/search <query>", "Ask Hamster to search technical documentation")
+    table.add_row("/sync", "Re-sync project files to sandbox (use if files missing)")
     table.add_row("/clear", "Clear the terminal and redraw the splash")
     table.add_row("/exit", "Leave Hamster (prints farewell graphic)")
     console.print(table)
 
 
 def render_action_summary(action: str, details: Mapping[str, str]) -> None:
-    table = Table(title="Requested Tool Action", border_style="magenta")
-    table.add_column("Field", style="bold cyan", no_wrap=True)
-    table.add_column("Value", style="white", overflow="fold")
-    table.add_row("Action", action)
-    for key, value in details.items():
-        table.add_row(key, value)
-    console.print(table)
+    """Minimal action indicator - suppressed for cleaner UI."""
+    pass
 
 
 def render_files_summary(rows: Sequence[Mapping[str, str]]) -> None:
-    table = Table(title="Files Touched", border_style="cyan")
-    table.add_column("Operation", style="bold")
-    table.add_column("Path", style="white", overflow="fold")
-    table.add_column("Scope", style="dim")
-    for row in rows:
-        table.add_row(row.get("operation", ""), row.get("path", ""), row.get("scope", "sandbox"))
-    console.print(table)
+    """File access indicator - suppressed for cleaner UI."""
+    pass
 
 
 def render_diff(filepath: str, diff_lines: Sequence[str]) -> None:
@@ -181,7 +174,21 @@ def render_security_violation(message: str) -> None:
 
 
 def render_tool_result(name: str, content: str) -> None:
-    console.print(Panel(content, title=f"tool:{name}", border_style="green"))
+    """Render tool result with minimal UI overhead. Suppress for read operations."""
+    # Skip rendering for successful read operations (content shows as file excerpt)
+    if name == "read_file" and content and not content.startswith("ERROR:"):
+        return
+    # Skip for search_codebase with results (agent already sees results)
+    if name == "search_codebase" and content and content != "No matches." and not content.startswith("Denied"):
+        return
+    # Skip for denied/successful quiet operations
+    if content in ("Denied.", "User denied."):
+        return
+    # Minimal render for errors and status messages
+    if content.startswith("ERROR:") or content.startswith("SECURITY"):
+        console.print(Panel(content, border_style="red", title="⚠️  Tool Error"))
+    elif content.startswith("Denied") or content.startswith("User denied"):
+        console.print(f"[yellow]🐹 {content}[/]")
 
 
 def render_model_error(message: str) -> None:
@@ -221,7 +228,7 @@ def sandbox_status(message: str):
 
 def confirm(prompt: str) -> bool:
     while True:
-        answer = prompt_user(f"[bold gold3]{prompt}[/] ").strip().lower()
+        answer = prompt_user(f"{prompt} (y/n): ").strip().lower()
         if answer in {"y", "yes"}:
             return True
         if answer in {"n", "no"}:
