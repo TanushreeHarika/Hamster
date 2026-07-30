@@ -103,24 +103,7 @@ def _stage_file_to_sandbox(filepath: str) -> str:
     return staged
 
 
-def _apply_patch_to_root(filepath: str, updated_content: str) -> None:
-    """Write *updated_content* directly to the project-root copy of *filepath*.
 
-    The diff preview has already been shown and approved by the user before
-    this function is called.
-    """
-    root_path = os.path.join(_project_root(), filepath.lstrip("/"))
-    # Ensure parent directories exist (e.g. when a new sub-path is staged)
-    os.makedirs(os.path.dirname(root_path), exist_ok=True)
-    Path(root_path).write_text(updated_content, encoding="utf-8")
-
-
-def _cleanup_staged_file(staged_path: str) -> None:
-    """Delete the temporary staged copy from the sandbox after patching."""
-    try:
-        os.unlink(staged_path)
-    except FileNotFoundError:
-        pass  # already gone — that's fine
 
 BLOCKED_COMMAND_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"(^|[;&|]\s*)sudo(\s|$)", re.IGNORECASE),
@@ -335,8 +318,8 @@ def edit_file_patch(filepath: str, target_text: str, replacement_text: str) -> s
       1. Lazily stage the file from the project root into ./sandbox/.
       2. Apply the text replacement on the *staged* copy.
       3. Show a unified diff and ask for approval.
-      4. On approval: write the updated content back to the **project root** file,
-         then delete the temporary staged copy from the sandbox.
+      4. On approval: write the updated content back to the staged copy only.
+         The root file remains untouched until explicitly applied.
     """
     # Security gate
     try:
@@ -363,15 +346,37 @@ def edit_file_patch(filepath: str, target_text: str, replacement_text: str) -> s
         # Leave staged file so the agent can retry; it will be cleaned at session end
         return "Denied."
 
-    with sandbox_status("✏️  Patching root file..."):
-        # 1. Write updated content to the staged copy
+    with sandbox_status("✏️  Patching sandbox copy..."):
+        # Write updated content to the staged copy only
         Path(staged).write_text(updated, encoding="utf-8")
-        # 2. Apply the patch to the actual project root file
-        _apply_patch_to_root(filepath, updated)
-        # 3. Clean up the temporary staged copy
-        _cleanup_staged_file(staged)
 
-    return f"Patched {filepath}: replaced 1 occurrence (root file updated, staged copy removed)."
+    return f"Patched {filepath}: replaced 1 occurrence (staged in sandbox)."
+
+
+def write_file(filepath: str, content: str) -> str:
+    """
+    Creates or overwrites a file relative to the sandbox,
+    automatically creating missing parent directories.
+    """
+    try:
+        # Resolve path strictly within SANDBOX_ROOT
+        staged_abs = Path(_resolve_inside_sandbox(filepath))
+        
+        # 1. Automatically create missing parent directories in sandbox
+        staged_abs.parent.mkdir(parents=True, exist_ok=True)
+        
+        # 2. Render creation diff/preview and ask for user approval
+        original = staged_abs.read_text(encoding="utf-8") if staged_abs.exists() else ""
+        render_diff(filepath, _make_patch_preview(filepath, original, content))
+        if not confirm(f"Create file '[sandbox]/{filepath}' (y/n)?"):
+            return "File creation denied by user."
+            
+        # 3. Write file directly inside sandbox
+        with sandbox_status("✏️  Writing to sandbox..."):
+            staged_abs.write_text(content, encoding="utf-8")
+        return f"Successfully created and wrote file inside sandbox: {filepath}"
+    except Exception as e:
+        return f"Error creating file {filepath}: {str(e)}"
 
 
 def web_search(query: str) -> str:
@@ -473,15 +478,10 @@ def list_sandbox_files(pattern: str = "") -> str:
 
 
 def apply_sandbox_to_root(project_root: Path | None = None, verbose: bool = False) -> str:
-    """Deprecated: bulk apply sandbox → root.
+    """Sync verified edits from sandbox back to project root.
 
-    In the demand-based lazy-copy model, each approved ``edit_file_patch`` call
-    writes the updated content directly to the project root file and removes the
-    staged sandbox copy.  A bulk apply is therefore no longer needed.
-
-    This function is retained as an emergency fallback only.  It will copy any
-    remaining staged files in the sandbox back to the project root, skipping
-    protected paths.
+    Copies modified files from the isolated sandbox directory back to the
+    project root, allowing verified changes to be committed to the repository.
 
     Returns:
         Status message with sync summary.
@@ -496,7 +496,7 @@ def apply_sandbox_to_root(project_root: Path | None = None, verbose: bool = Fals
     protected_items = {".env", ".git", ".gitignore", ".venv", "sandbox"}
     copied_count = 0
 
-    with sandbox_status("🔄 Emergency apply: sandbox → root..."):
+    with sandbox_status("🔄 Syncing sandbox → root..."):
         for item in sandbox_root.rglob("*"):
             if not item.is_file():
                 continue
@@ -509,7 +509,7 @@ def apply_sandbox_to_root(project_root: Path | None = None, verbose: bool = Fals
             shutil.copy2(item, dest)
             copied_count += 1
 
-    return f"Emergency apply: copied {copied_count} staged file(s) to project root."
+    return f"Applied {copied_count} staged file(s) to project root."
 
 
 TOOL_SCHEMAS = [
@@ -555,9 +555,8 @@ TOOL_SCHEMAS = [
             "description": (
                 "Replace one exact target text block in a project file. "
                 "The file is lazily staged into ./sandbox/, the replacement is applied to "
-                "the staged copy, a diff is shown for approval, and — on approval — the "
-                "patch is written directly to the project root file and the staged copy is "
-                "removed. Use relative paths like 'hamster/tools.py'. Never prefix with 'sandbox/'."
+                "the staged copy, and a diff is shown for approval. On approval, the "
+                "patch is written to the sandbox copy only. Use relative paths like 'hamster/tools.py'. Never prefix with 'sandbox/'."
             ),
             "parameters": {
                 "type": "object",
@@ -567,6 +566,41 @@ TOOL_SCHEMAS = [
                     "replacement_text": {"type": "string"},
                 },
                 "required": ["filepath", "target_text", "replacement_text"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "write_file",
+            "description": (
+                "Create or overwrite a file directly inside ./sandbox/, automatically scaffolding "
+                "missing parent directories. Does not write to project root. Use relative paths like 'hamster/new_file.py'. Never prefix with 'sandbox/'."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "filepath": {"type": "string"},
+                    "content": {"type": "string"},
+                },
+                "required": ["filepath", "content"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "apply_sandbox_to_root",
+            "description": (
+                "Sync all verified edits from ./sandbox/ back to the real project root. "
+                "Use this after you have made changes and the user wants to keep them."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "required": [],
                 "additionalProperties": False,
             },
         },
@@ -606,6 +640,8 @@ TOOL_FUNCTIONS = {
     "search_codebase": search_codebase,
     "read_file": read_file,
     "edit_file_patch": edit_file_patch,
+    "write_file": write_file,
     "web_search": web_search,
     "run_sandbox_command": run_sandbox_command,
+    "apply_sandbox_to_root": apply_sandbox_to_root,
 }
