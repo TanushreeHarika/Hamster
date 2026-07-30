@@ -4,7 +4,7 @@ from pathlib import Path
 from hamster.agent import initial_messages, run_agent_turn
 from hamster.config import load_config
 from hamster.openrouter import OpenRouterClient
-from hamster.tools import cleanup_sandbox, configure_sandbox, init_session_state, sync_workspace_to_sandbox
+from hamster.tools import cleanup_sandbox, configure_sandbox, init_session_state
 from hamster.ui import clear_screen, print_exit_logo, print_help, print_logo, prompt_user
 
 
@@ -22,11 +22,6 @@ def main() -> None:
     project_root = Path.cwd()
     _ensure_foundation(project_root)
     configure_sandbox(project_root / "sandbox")
-    
-    # Sync and verify
-    sync_result = sync_workspace_to_sandbox(project_root)
-    print(f"ℹ️  {sync_result}")
-    
     init_session_state()
     print_logo()
 
@@ -61,10 +56,6 @@ def main() -> None:
         if user_input == "/clear":
             clear_screen()
             print_logo()
-            continue
-        if user_input == "/sync":
-            result = sync_workspace_to_sandbox(Path.cwd())
-            print(f"✅ {result}\n")
             continue
         if user_input == "/files":
             from hamster.tools import list_sandbox_files
