@@ -8,15 +8,21 @@ import shutil
 import subprocess
 from pathlib import Path
 
-from src.security import assert_sandbox_path
+from src.sandbox import TempSandbox
+from src.security import assert_sandbox_path, PathSecurityViolation
 from hamster.ui import (
     confirm,
     render_diff,
     render_security_violation,
+    request_approval,
     sandbox_status,
     status,
 )
 
+
+# ---------------------------------------------------------------------------
+# Exceptions
+# ---------------------------------------------------------------------------
 
 class SandboxViolation(ValueError):
     pass
@@ -26,24 +32,40 @@ class CommandSecurityViolation(ValueError):
     pass
 
 
+# ---------------------------------------------------------------------------
+# Session state
+# ---------------------------------------------------------------------------
+
 class SessionState:
     """Track approval state across tool calls within a session."""
-    def __init__(self):
+
+    def __init__(self) -> None:
         self.read_approved = False
         self.approved_read_scopes: set[str] = set()
-    
+        self.low_risk_actions_approved = False
+
     def approve_read(self, scope: str = "sandbox") -> None:
         """Mark read operations as approved for the given scope."""
         self.read_approved = True
         self.approved_read_scopes.add(scope)
-    
+
     def is_read_approved(self, scope: str = "sandbox") -> bool:
         """Check if read operations are approved for the given scope."""
         return scope in self.approved_read_scopes
 
+    def approve_low_risk_actions(self) -> None:
+        """Mark low-risk tool actions as approved for the current session."""
+        self.low_risk_actions_approved = True
 
-# Global session state initialized in cli.py
+    def is_low_risk_actions_approved(self) -> bool:
+        return self.low_risk_actions_approved
+
+
+# Global session state — initialized by init_session_state()
 _session_state: SessionState | None = None
+
+# Active sandbox — set by configure_sandbox()
+_sandbox: TempSandbox | None = None
 
 
 def init_session_state() -> SessionState:
@@ -54,79 +76,44 @@ def init_session_state() -> SessionState:
 
 
 def get_session_state() -> SessionState:
-    """Get the current session state."""
+    """Return the current session state."""
     if _session_state is None:
         raise RuntimeError("Session not initialized. Call init_session_state() first.")
     return _session_state
 
 
-SANDBOX_ROOT = os.path.realpath(os.path.join(os.getcwd(), "sandbox"))
+def configure_sandbox(sandbox: TempSandbox) -> None:
+    """Inject the active TempSandbox into the tool subsystem."""
+    global _sandbox
+    _sandbox = sandbox
 
+
+def _get_sandbox() -> TempSandbox:
+    """Return the active sandbox, raising if not configured or destroyed."""
+    if _sandbox is None:
+        raise RuntimeError("Sandbox not configured. Call configure_sandbox() first.")
+    _sandbox.assert_alive()
+    return _sandbox
+
+
+# ---------------------------------------------------------------------------
+# Internal path helpers
+# ---------------------------------------------------------------------------
 
 def _project_root() -> str:
-    """Return the canonical project root (parent of the sandbox directory)."""
-    return str(Path(SANDBOX_ROOT).parent)
+    """Return the project root (cwd at startup)."""
+    # The project root is the working directory when hamster was launched.
+    # We derive it from __file__ so it never changes even if cwd drifts.
+    return str(Path(__file__).parent.parent.resolve())
 
 
-def _staged_path(filepath: str) -> str:
-    """Map a relative filepath to its mirror location inside the sandbox."""
-    return os.path.join(SANDBOX_ROOT, filepath.lstrip("/"))
-
-
-def _stage_file_to_sandbox(filepath: str) -> str:
-    """Lazily copy a single file from the project root into the sandbox.
-
-    If the file is already staged (sandbox copy is up-to-date), this is a
-    no-op.  Returns the absolute path of the staged file.
-
-    Raises:
-        FileNotFoundError: If the source file does not exist in the project root.
-        SandboxViolation:  If the resolved path escapes the sandbox boundary.
-    """
-    # Security: ensure the target resolves inside sandbox
-    staged = _resolve_inside_sandbox(filepath)
-
-    # Source file lives in the project root
-    source = os.path.join(_project_root(), filepath.lstrip("/"))
-    if not os.path.isfile(source):
-        raise FileNotFoundError(
-            f"Source file not found in project root: {source!r}"
-        )
-
-    # Skip copy if the staged version is already current
-    if os.path.isfile(staged):
-        return staged
-
-    # Ensure the parent directory exists inside the sandbox
-    os.makedirs(os.path.dirname(staged), exist_ok=True)
-    shutil.copy2(source, staged)
-    return staged
-
-
-
-
-BLOCKED_COMMAND_PATTERNS: tuple[re.Pattern[str], ...] = (
-    re.compile(r"(^|[;&|]\s*)sudo(\s|$)", re.IGNORECASE),
-    re.compile(r"(^|[;&|]\s*)rm\s+", re.IGNORECASE),
-    re.compile(r"(^|[;&|]\s*)chmod\s+", re.IGNORECASE),
-    re.compile(r"(^|[;&|]\s*)chown\s+", re.IGNORECASE),
-    re.compile(r"curl\s+[^;&|]*\|\s*(sh|bash|zsh|python|python3)\b", re.IGNORECASE),
-    re.compile(r"wget\s+[^;&|]*\|\s*(sh|bash|zsh|python|python3)\b", re.IGNORECASE),
-    re.compile(r"\b(base64|openssl)\b[^;&|]*\|\s*(sh|bash|zsh|python|python3)\b", re.IGNORECASE),
-)
-
-
-def configure_sandbox(root: Path) -> None:
-    global SANDBOX_ROOT
-    SANDBOX_ROOT = os.path.realpath(str(root))
-
-
-def _sandbox_root() -> str:
-    return SANDBOX_ROOT
+def _sandbox_root_str() -> str:
+    """Return the sandbox root as a string (for legacy callers)."""
+    return str(_get_sandbox().root)
 
 
 def _is_inside_sandbox(absolute_path: str) -> bool:
-    root = _sandbox_root()
+    root = _sandbox_root_str()
     return absolute_path == root or absolute_path.startswith(root + os.sep)
 
 
@@ -137,56 +124,45 @@ def _security_violation(message: str) -> str:
 
 
 def _resolve_inside_sandbox(filepath: str) -> str:
-    """Resolve *filepath* relative to the sandbox root with boundary enforcement."""
-    root = _sandbox_root()
+    """Resolve *filepath* relative to the sandbox root with boundary enforcement.
+
+    The filepath is resolved against the full sandbox root (which includes the
+    mirror/ and new/ subtrees).  This is used only for the security validation
+    step; the actual staging helpers use mirror_path / new_path directly.
+    """
+    sandbox = _get_sandbox()
+    root_str = str(sandbox.root)
     try:
-        absolute_path = assert_sandbox_path(filepath, root=root)
-    except Exception as exc:
+        absolute_path = assert_sandbox_path(filepath, root=root_str)
+    except (PathSecurityViolation, Exception) as exc:
         raise SandboxViolation(str(exc)) from exc
     if not _is_inside_sandbox(absolute_path):
         raise SandboxViolation(
-            f"Blocked sandbox escape attempt. Requested={filepath!r}; resolved={absolute_path!r}; sandbox={root!r}."
+            f"Blocked sandbox escape attempt. "
+            f"Requested={filepath!r}; resolved={absolute_path!r}; sandbox={root_str!r}."
         )
     return absolute_path
 
 
-def _resolve_file_with_fallback(filepath: str) -> str:
-    """Resolve a file path with case-insensitive fallback.
-    
-    If the exact path doesn't exist, tries to find a case-insensitive match
-    in the same directory before raising FileNotFoundError.
+def _stage_file_to_sandbox(filepath: str) -> str:
+    """Lazily copy a project file into the sandbox mirror/ on first access.
+
+    Returns the absolute path of the staged file.  If the mirror copy already
+    exists it is returned immediately (no re-copy).
     """
-    try:
-        resolved = _resolve_inside_sandbox(filepath)
-    except SandboxViolation:
-        raise
-    
-    # If exact path exists, return it
-    if os.path.isfile(resolved):
-        return resolved
-    
-    # Try case-insensitive fallback
-    parent_dir = os.path.dirname(resolved)
-    filename = os.path.basename(resolved)
-    
-    if not os.path.isdir(parent_dir):
-        raise FileNotFoundError(f"Parent directory not found: {parent_dir}")
-    
-    # List all files in parent directory and try case-insensitive match
-    try:
-        entries = os.listdir(parent_dir)
-    except (OSError, PermissionError) as e:
-        raise FileNotFoundError(f"Cannot access directory {parent_dir}: {e}") from e
-    
-    # Case-insensitive match
-    for entry in entries:
-        if entry.lower() == filename.lower():
-            fallback_path = os.path.join(parent_dir, entry)
-            if os.path.isfile(fallback_path):
-                return fallback_path
-    
-    # No match found
-    raise FileNotFoundError(f"File not found (case-sensitive or case-insensitive): {filepath}")
+    sandbox = _get_sandbox()
+    staged = sandbox.mirror_path(filepath)
+
+    if staged.is_file():
+        return str(staged)
+
+    source = Path(_project_root()) / filepath.lstrip("/")
+    if not source.is_file():
+        raise FileNotFoundError(f"Source file not found in project root: {source!r}")
+
+    staged.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(source, staged)
+    return str(staged)
 
 
 def _make_patch_preview(filepath: str, original: str, updated: str) -> list[str]:
@@ -201,23 +177,35 @@ def _make_patch_preview(filepath: str, original: str, updated: str) -> list[str]
     )
 
 
+# ---------------------------------------------------------------------------
+# Terminal command validation
+# ---------------------------------------------------------------------------
+
+BLOCKED_COMMAND_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"(^|[;&|]\s*)sudo(\s|$)", re.IGNORECASE),
+    re.compile(r"(^|[;&|]\s*)rm\s+", re.IGNORECASE),
+    re.compile(r"(^|[;&|]\s*)chmod\s+", re.IGNORECASE),
+    re.compile(r"(^|[;&|]\s*)chown\s+", re.IGNORECASE),
+    re.compile(r"curl\s+[^;&|]*\|\s*(sh|bash|zsh|python|python3)\b", re.IGNORECASE),
+    re.compile(r"wget\s+[^;&|]*\|\s*(sh|bash|zsh|python|python3)\b", re.IGNORECASE),
+    re.compile(r"\b(base64|openssl)\b[^;&|]*\|\s*(sh|bash|zsh|python|python3)\b", re.IGNORECASE),
+)
+
+
 def validate_terminal_command(command: str) -> None:
     for pattern in BLOCKED_COMMAND_PATTERNS:
         if pattern.search(command):
             raise CommandSecurityViolation(
                 f"Blocked command by blacklist pattern {pattern.pattern!r}: {command!r}"
             )
-
     parts = shlex.split(command)
     if not parts:
         raise CommandSecurityViolation("Refusing to run an empty terminal command.")
 
-    if parts[0] == "mv" and len(parts) >= 3:
-        source = _resolve_inside_sandbox(parts[-2])
-        destination = _resolve_inside_sandbox(parts[-1])
-        if not (_is_inside_sandbox(source) and _is_inside_sandbox(destination)):
-            raise CommandSecurityViolation(f"Blocked mv outside sandbox: {command!r}")
 
+# ---------------------------------------------------------------------------
+# Public tool functions
+# ---------------------------------------------------------------------------
 
 def run_sandbox_command(command: str) -> str:
     try:
@@ -228,10 +216,11 @@ def run_sandbox_command(command: str) -> str:
     if not confirm(f"🐹 Run: {command}"):
         return "Denied."
 
+    sandbox = _get_sandbox()
     with sandbox_status("🖥️  Running command..."):
         result = subprocess.run(
             shlex.split(command),
-            cwd=_sandbox_root(),
+            cwd=str(sandbox.root),
             text=True,
             capture_output=True,
             check=False,
@@ -240,12 +229,11 @@ def run_sandbox_command(command: str) -> str:
 
 
 def search_codebase(query: str) -> str:
-    """Search for *query* across the **project root** (not the sandbox).
+    """Search for *query* across the real project root (not the sandbox).
 
     Searches are always read-only and fast because they target the real
     repository on disk rather than staged copies.
     """
-    # Search the real project root so the index is always complete.
     root = _project_root()
 
     session = get_session_state()
@@ -254,7 +242,6 @@ def search_codebase(query: str) -> str:
             return "Denied."
         session.approve_read("codebase")
 
-    # Check if ripgrep is installed
     try:
         result_check = subprocess.run(
             ["rg", "--version"],
@@ -288,13 +275,15 @@ def search_codebase(query: str) -> str:
 def read_file(filepath: str) -> str:
     """Stage *filepath* from the project root into the sandbox on demand, then read it.
 
-    The staged copy is kept alive so that a subsequent ``edit_file_patch`` call
-    on the same file can skip the re-copy.
+    The staged copy lives in ``mirror/`` inside the temp sandbox so subsequent
+    ``edit_file_patch`` calls can skip the re-copy.
     """
-    # Security gate — validates the path resolves inside the sandbox boundary
+    # Security: validate path won't escape sandbox
+    sandbox = _get_sandbox()
+    root_str = str(sandbox.root)
     try:
-        _resolve_inside_sandbox(filepath)
-    except SandboxViolation as exc:
+        assert_sandbox_path(filepath, root=root_str)
+    except PathSecurityViolation as exc:
         return _security_violation(str(exc))
 
     session = get_session_state()
@@ -315,68 +304,92 @@ def edit_file_patch(filepath: str, target_text: str, replacement_text: str) -> s
     """Edit a file using a text-replacement patch with user approval.
 
     Workflow:
-      1. Lazily stage the file from the project root into ./sandbox/.
-      2. Apply the text replacement on the *staged* copy.
-      3. Show a unified diff and ask for approval.
+      1. Lazily stage the file from the project root into sandbox ``mirror/``.
+      2. Apply the text replacement on the staged copy.
+      3. Ask for approval before applying; show diff only when requested.
       4. On approval: write the updated content back to the staged copy only.
-         The root file remains untouched until explicitly applied.
+         The real project file remains untouched until apply_sandbox_to_root.
     """
-    # Security gate
+    sandbox = _get_sandbox()
+    root_str = str(sandbox.root)
     try:
-        _resolve_inside_sandbox(filepath)
-    except SandboxViolation as exc:
+        assert_sandbox_path(filepath, root=root_str)
+    except PathSecurityViolation as exc:
         return _security_violation(str(exc))
 
-    # --- Stage the file on demand ---
     try:
         with sandbox_status("📋 Staging file..."):
             staged = _stage_file_to_sandbox(filepath)
     except FileNotFoundError:
         return f"File not found in project root: {filepath}"
 
-    # --- Apply the text replacement on the staged copy ---
     original = Path(staged).read_text(encoding="utf-8")
     if target_text not in original:
         raise ValueError(f"Target text was not found in {filepath}.")
 
-    updated = original.replace(target_text, replacement_text, 1)
-    render_diff(filepath, _make_patch_preview(filepath, original, updated))
+    replaced_count = original.count(target_text)
+    if replaced_count == 0:
+        raise ValueError(f"Target text was not found in {filepath}.")
 
-    if not confirm(f"🐹 Edit: {filepath}"):
-        # Leave staged file so the agent can retry; it will be cleaned at session end
-        return "Denied."
+    updated = original.replace(target_text, replacement_text)
+    diff_lines = _make_patch_preview(filepath, original, updated)
+    additions = sum(1 for l in diff_lines if l.startswith("+") and not l.startswith("+++ "))
+    deletions = sum(1 for l in diff_lines if l.startswith("-") and not l.startswith("--- "))
+
+    session = get_session_state()
+    if not session.is_low_risk_actions_approved():
+        while True:
+            action = request_approval(
+                f"Edit {filepath}: replace {replaced_count} occurrence{'s' if replaced_count != 1 else ''}",
+                filepath=filepath,
+                additions=additions,
+                deletions=deletions,
+            )
+            if action == "view":
+                render_diff(filepath, diff_lines)
+                continue
+            if action == "no":
+                return "Denied."
+            if action == "all":
+                session.approve_low_risk_actions()
+            break
 
     with sandbox_status("✏️  Patching sandbox copy..."):
-        # Write updated content to the staged copy only
         Path(staged).write_text(updated, encoding="utf-8")
 
     return f"Patched {filepath}: replaced 1 occurrence (staged in sandbox)."
 
 
 def write_file(filepath: str, content: str) -> str:
+    """Create or overwrite a file inside the sandbox ``new/`` subtree.
+
+    New files are isolated in ``new/`` so apply_sandbox_to_root can
+    distinguish them from lazily staged project files.
     """
-    Creates or overwrites a file relative to the sandbox,
-    automatically creating missing parent directories.
-    """
+    sandbox = _get_sandbox()
     try:
-        # Resolve path strictly within SANDBOX_ROOT
-        staged_abs = Path(_resolve_inside_sandbox(filepath))
-        
-        # 1. Automatically create missing parent directories in sandbox
-        staged_abs.parent.mkdir(parents=True, exist_ok=True)
-        
-        # 2. Render creation diff/preview and ask for user approval
-        original = staged_abs.read_text(encoding="utf-8") if staged_abs.exists() else ""
-        render_diff(filepath, _make_patch_preview(filepath, original, content))
-        if not confirm(f"Create file '[sandbox]/{filepath}' (y/n)?"):
-            return "File creation denied by user."
-            
-        # 3. Write file directly inside sandbox
+        dest = sandbox.new_path(filepath)
+        original = dest.read_text(encoding="utf-8") if dest.exists() else ""
+        diff_lines = _make_patch_preview(filepath, original, content)
+        additions = sum(1 for l in diff_lines if l.startswith("+") and not l.startswith("+++ "))
+        deletions = sum(1 for l in diff_lines if l.startswith("-") and not l.startswith("--- "))
+        session = get_session_state()
+        if not session.is_low_risk_actions_approved():
+            while True:
+                action = request_approval(f"Create file: {filepath}", filepath=filepath, additions=additions, deletions=deletions)
+                if action == "view":
+                    render_diff(filepath, diff_lines)
+                    continue
+                if action == "no":
+                    return "File creation denied by user."
+                if action == "all":
+                    session.approve_low_risk_actions()
+                break
         with sandbox_status("✏️  Writing to sandbox..."):
-            staged_abs.write_text(content, encoding="utf-8")
-        return f"Successfully created and wrote file inside sandbox: {filepath}"
+            dest.write_text(content, encoding="utf-8")
+        return f"Successfully created file in sandbox: {filepath}"
     except Exception as e:
-        return f"Error creating file {filepath}: {str(e)}"
+        return f"Error creating file {filepath}: {e}"
 
 
 def web_search(query: str) -> str:
@@ -387,7 +400,9 @@ def web_search(query: str) -> str:
         try:
             from duckduckgo_search import DDGS
         except ImportError as exc:
-            raise RuntimeError("duckduckgo-search is not installed. Run `uv pip install -e .`.") from exc
+            raise RuntimeError(
+                "duckduckgo-search is not installed. Run `uv pip install -e .`."
+            ) from exc
 
         results = []
         with DDGS() as ddgs:
@@ -400,117 +415,143 @@ def web_search(query: str) -> str:
     return "\n\n".join(results) if results else "No web results found."
 
 
+def apply_sandbox_to_root(project_root: Path | None = None, verbose: bool = False) -> str:
+    """Copy verified edits from the sandbox back to the real project root.
+
+    Copies staged files from ``mirror/`` and new files from ``new/`` into
+    the project root.  The sandbox is NOT destroyed after apply so the
+    session can continue making further edits.
+
+    Returns:
+        Status message with sync summary.
+    """
+    sandbox = _get_sandbox()
+
+    if project_root is None:
+        project_root = Path(_project_root())
+    else:
+        project_root = Path(project_root)
+
+    protected_items = {".env", ".git", ".venv"}
+    copied_count = 0
+
+    with sandbox_status("🔄 Syncing sandbox → project root..."):
+        for subtree in (sandbox.root / "mirror", sandbox.root / "new"):
+            if not subtree.exists():
+                continue
+            for item in subtree.rglob("*"):
+                if not item.is_file():
+                    continue
+                rel = item.relative_to(subtree)
+                if rel.parts[0] in protected_items:
+                    continue
+                dest = project_root / rel
+                if dest.exists() and item.read_bytes() == dest.read_bytes():
+                    continue
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(item, dest)
+                copied_count += 1
+
+    return f"Applied {copied_count} staged file(s) to project root."
+
+
+def cleanup_sandbox() -> str:
+    """Destroy the active temp sandbox.
+
+    Called on session exit (both normal and abnormal).  The TempSandbox
+    atexit hook acts as a secondary safety net.
+    """
+    if _sandbox is None:
+        return "No active sandbox to clean up."
+    return _sandbox.destroy()
+
+
+def list_sandbox_files(pattern: str = "") -> str:
+    """List files in the sandbox for debugging.
+
+    Args:
+        pattern: Optional substring to filter files.
+
+    Returns:
+        String listing of sandbox contents.
+    """
+    try:
+        sandbox = _get_sandbox()
+    except RuntimeError as exc:
+        return f"ERROR: {exc}"
+
+    files = []
+    try:
+        for item in sorted(sandbox.root.rglob("*")):
+            if item.is_file():
+                rel_path = item.relative_to(sandbox.root)
+                if not pattern or pattern.lower() in str(rel_path).lower():
+                    files.append(str(rel_path))
+    except Exception as e:
+        return f"ERROR listing sandbox: {e}"
+
+    if not files:
+        return f"Sandbox is empty. Path: {sandbox.root}"
+
+    header = f"Sandbox: {sandbox.root}\nFiles ({len(files)} total):\n"
+    listing = "\n".join(files[:50])
+    suffix = f"\n... and {len(files) - 50} more" if len(files) > 50 else ""
+    return header + listing + suffix
+
+
+def review_changes() -> str:
+    """Summarize pending staged sandbox changes for user review."""
+    try:
+        sandbox = _get_sandbox()
+    except RuntimeError as exc:
+        return f"ERROR: {exc}"
+
+    pending = []
+    mirror_dir = sandbox.root / "mirror"
+    new_dir = sandbox.root / "new"
+
+    if mirror_dir.exists():
+        for item in sorted(mirror_dir.rglob("*")):
+            if not item.is_file():
+                continue
+            rel = item.relative_to(sandbox.root)
+            project_path = Path(_project_root()) / rel
+            if not project_path.exists():
+                pending.append(f"NEW (staged): {rel}")
+                continue
+            original = project_path.read_text(encoding="utf-8")
+            updated = item.read_text(encoding="utf-8")
+            if original != updated:
+                pending.append(f"MODIFIED: {rel}")
+
+    if new_dir.exists():
+        for item in sorted(new_dir.rglob("*")):
+            if item.is_file():
+                rel = item.relative_to(sandbox.root)
+                pending.append(f"NEW: {rel}")
+
+    if not pending:
+        return "No staged sandbox changes pending review."
+
+    summary = [f"Pending staged sandbox changes ({len(pending)} files):"]
+    summary.extend(f"  - {line}" for line in pending)
+    summary.append("\nUse /apply to commit staged changes to the project root.")
+    summary.append("Use /files to inspect sandbox contents.")
+    return "\n".join(summary)
+
+
 def sync_workspace_to_sandbox(project_root: Path | None = None, verbose: bool = False) -> str:
     """No-op stub retained for API compatibility.
 
     The demand-based lazy-copy model stages individual files on demand via
     ``_stage_file_to_sandbox``.  Bulk startup syncing is no longer performed.
-
-    Returns:
-        Informational message explaining the new behaviour.
     """
     return "Lazy-copy mode active: files are staged on demand. No bulk sync needed."
 
 
-def cleanup_sandbox() -> str:
-    """Remove all synced files from the sandbox at the end of a session.
-
-    Deletes every item inside the sandbox directory (preserving the directory
-    itself) so no stale copies linger after the agent exits.
-
-    Returns:
-        Status message describing what was removed.
-    """
-    import shutil
-
-    sandbox_root = Path(_sandbox_root())
-    if not sandbox_root.exists():
-        return "Sandbox directory does not exist — nothing to clean."
-
-    removed = []
-    errors = []
-    for item in list(sandbox_root.iterdir()):
-        try:
-            if item.is_dir():
-                shutil.rmtree(item)
-            else:
-                item.unlink()
-            removed.append(item.name)
-        except Exception as exc:  # pragma: no cover
-            errors.append(f"{item.name}: {exc}")
-
-    msg = f"🧹 Sandbox cleaned — removed {len(removed)} item(s)."
-    if errors:
-        msg += f" Errors: {'; '.join(errors)}"
-    return msg
-
-
-def list_sandbox_files(pattern: str = "") -> str:
-    """List files in the sandbox directory for debugging.
-    
-    Args:
-        pattern: Optional substring to filter files.
-    
-    Returns:
-        String listing of sandbox contents.
-    """
-    sandbox_root = Path(_sandbox_root())
-    
-    if not sandbox_root.exists():
-        return f"ERROR: Sandbox not found at {sandbox_root}"
-    
-    files = []
-    try:
-        for item in sorted(sandbox_root.rglob("*")):
-            if item.is_file():
-                rel_path = item.relative_to(sandbox_root)
-                if not pattern or pattern.lower() in str(rel_path).lower():
-                    files.append(str(rel_path))
-    except Exception as e:
-        return f"ERROR listing sandbox: {e}"
-    
-    if not files:
-        return f"Sandbox is empty. Path: {sandbox_root}"
-    
-    return f"Files in sandbox ({len(files)} total):\n" + "\n".join(files[:50]) + (
-        f"\n... and {len(files) - 50} more" if len(files) > 50 else ""
-    )
-
-
-def apply_sandbox_to_root(project_root: Path | None = None, verbose: bool = False) -> str:
-    """Sync verified edits from sandbox back to project root.
-
-    Copies modified files from the isolated sandbox directory back to the
-    project root, allowing verified changes to be committed to the repository.
-
-    Returns:
-        Status message with sync summary.
-    """
-    sandbox_root = Path(_sandbox_root())
-
-    if project_root is None:
-        project_root = sandbox_root.parent
-    else:
-        project_root = Path(project_root)
-
-    protected_items = {".env", ".git", ".gitignore", ".venv", "sandbox"}
-    copied_count = 0
-
-    with sandbox_status("🔄 Syncing sandbox → root..."):
-        for item in sandbox_root.rglob("*"):
-            if not item.is_file():
-                continue
-            # Skip protected top-level names
-            rel = item.relative_to(sandbox_root)
-            if rel.parts[0] in protected_items:
-                continue
-            dest = project_root / rel
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(item, dest)
-            copied_count += 1
-
-    return f"Applied {copied_count} staged file(s) to project root."
-
+# ---------------------------------------------------------------------------
+# Tool schema definitions for OpenRouter
+# ---------------------------------------------------------------------------
 
 TOOL_SCHEMAS = [
     {
@@ -537,7 +578,7 @@ TOOL_SCHEMAS = [
             "description": (
                 "Read a file from the project repository by its relative path "
                 "(e.g. 'hamster/agent.py', 'README.md'). "
-                "The file is lazily staged into ./sandbox/ on demand before reading. "
+                "The file is lazily staged into the OS temp sandbox on demand before reading. "
                 "Never prefix paths with 'sandbox/'."
             ),
             "parameters": {
@@ -554,9 +595,9 @@ TOOL_SCHEMAS = [
             "name": "edit_file_patch",
             "description": (
                 "Replace one exact target text block in a project file. "
-                "The file is lazily staged into ./sandbox/, the replacement is applied to "
+                "The file is lazily staged into the OS temp sandbox, the replacement is applied to "
                 "the staged copy, and a diff is shown for approval. On approval, the "
-                "patch is written to the sandbox copy only. Use relative paths like 'hamster/tools.py'. Never prefix with 'sandbox/'."
+                "patch is written to the sandbox copy only. Use relative paths like 'hamster/tools.py'."
             ),
             "parameters": {
                 "type": "object",
@@ -575,8 +616,9 @@ TOOL_SCHEMAS = [
         "function": {
             "name": "write_file",
             "description": (
-                "Create or overwrite a file directly inside ./sandbox/, automatically scaffolding "
-                "missing parent directories. Does not write to project root. Use relative paths like 'hamster/new_file.py'. Never prefix with 'sandbox/'."
+                "Create or overwrite a new file inside the OS temp sandbox, automatically scaffolding "
+                "missing parent directories. Does not write to the project root. "
+                "Use relative paths like 'hamster/new_file.py'."
             ),
             "parameters": {
                 "type": "object",
@@ -594,8 +636,9 @@ TOOL_SCHEMAS = [
         "function": {
             "name": "apply_sandbox_to_root",
             "description": (
-                "Sync all verified edits from ./sandbox/ back to the real project root. "
-                "Use this after you have made changes and the user wants to keep them."
+                "Copy all verified edits from the OS temp sandbox back to the real project root. "
+                "Use this after making changes and the user wants to keep them. "
+                "The sandbox stays active after apply for further edits."
             ),
             "parameters": {
                 "type": "object",
@@ -623,7 +666,7 @@ TOOL_SCHEMAS = [
         "function": {
             "name": "run_sandbox_command",
             "description": (
-                "Run a non-destructive terminal command inside ./sandbox/ after security "
+                "Run a non-destructive terminal command inside the OS temp sandbox after security "
                 "filtering and user approval. Use for exploratory commands on staged files."
             ),
             "parameters": {

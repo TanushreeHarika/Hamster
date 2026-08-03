@@ -14,6 +14,13 @@ from rich.text import Text
 
 console = Console()
 
+THEME = {
+    "primary": "gold3",
+    "secondary": "cyan",
+    "success": "green",
+    "warning": "yellow",
+    "danger": "red",
+}
 
 HAMSTER_LOGO = """
 ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠘⠃⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀
@@ -79,9 +86,9 @@ def print_logo() -> None:
     console.print(
         Panel(
             Align.center(logo_text),
-            border_style="gold3",
+            border_style=THEME["primary"],
             padding=(0, 2),
-            subtitle="[dim]🐹 Hamster — sandboxed OpenRouter engineering agent[/dim]",
+            subtitle=f"[dim]🐹 Hamster — sandboxed OpenRouter engineering agent[/dim]",
         )
     )
     metrics = Table.grid(padding=(0, 2))
@@ -111,13 +118,15 @@ def print_exit_logo() -> None:
 
 
 def print_help() -> None:
-    table = Table(title="[bold cyan]Hamster Commands[/]", border_style="cyan", box=box.ROUNDED)
-    table.add_column("Command", style="bold cyan", no_wrap=True)
+    table = Table(title=f"[bold {THEME['primary']}]Hamster Commands[/]", border_style=THEME["secondary"], box=box.ROUNDED)
+    table.add_column("Command", style=f"bold {THEME['secondary']}", no_wrap=True)
     table.add_column("Action", style="white")
     table.add_row("/help", "Show this command guide")
     table.add_row("/files", "List all files in sandbox (diagnostic)")
     table.add_row("/search <query>", "Ask Hamster to search technical documentation")
-    table.add_row("/sync", "Re-sync project files to sandbox (use if files missing)")
+    table.add_row("/pending", "Show pending staged sandbox changes")
+    table.add_row("/apply", "Commit staged sandbox changes to the project root")
+    table.add_row("/sync", "Refresh sandbox staging state")
     table.add_row("/clear", "Clear the terminal and redraw the splash")
     table.add_row("/exit", "Leave Hamster (prints farewell graphic)")
     console.print(table)
@@ -161,9 +170,9 @@ def render_diff(filepath: str, diff_lines: Sequence[str]) -> None:
     console.print(
         Panel(
             body,
-            title="[bold cyan]Diff Preview[/]",
-            subtitle=f"[dim cyan]{filepath}[/]",
-            border_style="cyan",
+            title=f"[bold {THEME['secondary']}]Diff Preview[/]",
+            subtitle=f"[dim]{filepath}[/]",
+            border_style=THEME["secondary"],
             padding=(0, 1),
         )
     )
@@ -171,6 +180,66 @@ def render_diff(filepath: str, diff_lines: Sequence[str]) -> None:
 
 def render_security_violation(message: str) -> None:
     console.print(Panel(message, title="Security Violation", border_style="bold red", style="red"))
+
+
+def request_approval(
+    prompt: str,
+    filepath: str | None = None,
+    additions: int | None = None,
+    deletions: int | None = None,
+    allow_view: bool = True,
+) -> str:
+    summary_parts = [prompt]
+    if filepath is not None:
+        summary_parts.append(f"File: {filepath}")
+    if additions is not None and deletions is not None:
+        summary_parts.append(f"Changes: +{additions} -{deletions}")
+    if allow_view:
+        summary_parts.append("[dim]Press v to view the diff before approving. Use a to approve all future low-risk fixes for this task.[/dim]")
+    body = "\n".join(summary_parts)
+
+    options = Table.grid(padding=(0, 1))
+    options.add_column(no_wrap=True)
+    options.add_column()
+    options.add_row("[green]y[/]", "approve once")
+    options.add_row("[red]n[/]", "deny")
+    options.add_row("[cyan]a[/]", "approve all low-risk actions")
+    if allow_view:
+        options.add_row("[yellow]v[/]", "view full detail")
+
+    console.print(
+        Panel(
+            Text(body, style="white"),
+            title="[bold]🐹 Hamster Approval[/]",
+            subtitle="Select an option and press Enter.",
+            border_style=THEME["primary"],
+            padding=(1, 2),
+        )
+    )
+    console.print(options)
+
+    prompt_text = (
+        f"[bold {THEME['primary']}]Approve?[/] "
+        f"[green]y[/]/[red]n[/]/[cyan]a[/]"
+    )
+    if allow_view:
+        prompt_text += f"/[yellow]v[/]"
+    prompt_text += " ([dim]n[/]): "
+
+    while True:
+        answer = prompt_user(prompt_text).strip().lower()
+        if answer in {"y", "yes"}:
+            return "yes"
+        if answer in {"n", "no", ""}:
+            return "no"
+        if answer == "a":
+            return "all"
+        if allow_view and answer == "v":
+            return "view"
+        if allow_view:
+            console.print("Please answer y, n, a, or v.", style=THEME["warning"])
+        else:
+            console.print("Please answer y, n, or a.", style=THEME["warning"])
 
 
 def render_tool_result(name: str, content: str) -> None:
@@ -186,9 +255,9 @@ def render_tool_result(name: str, content: str) -> None:
         return
     # Minimal render for errors and status messages
     if content.startswith("ERROR:") or content.startswith("SECURITY"):
-        console.print(Panel(content, border_style="red", title="⚠️  Tool Error"))
+        console.print(Panel(content, border_style=THEME["danger"], title="⚠️  Tool Error"))
     elif content.startswith("Denied") or content.startswith("User denied"):
-        console.print(f"[yellow]🐹 {content}[/]")
+        console.print(Panel(f"🐹 {content}", border_style=THEME["warning"], title="Hamster Notice"))
 
 
 def render_model_error(message: str) -> None:
@@ -228,9 +297,11 @@ def sandbox_status(message: str):
 
 def confirm(prompt: str) -> bool:
     while True:
-        answer = prompt_user(f"{prompt} (y/n): ").strip().lower()
+        answer = prompt_user(
+            f"[bold {THEME['primary']}] {prompt} [/][green](y)[/]/[red](n)[/] : "
+        ).strip().lower()
         if answer in {"y", "yes"}:
             return True
         if answer in {"n", "no"}:
             return False
-        console.print("Please answer y or n.", style="yellow")
+        console.print("Please answer y or n.", style=THEME["warning"])

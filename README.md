@@ -1,72 +1,74 @@
 # Hamster
 
-Hamster is a lightweight and efficient Command Line Interface (CLI) agent designed for software engineering tasks. Built from the ground up around the OpenRouter framework, it leverages permission-gated sandbox tools to provide a safe and controlled environment for executing commands and manipulating files.
+Hamster is a lightweight, efficient Command Line Interface (CLI) agent designed specifically for various software engineering tasks. Utilizing the OpenRouter framework, Hamster integrates permission-gated sandbox tools to create a secure and controlled environment for executing commands and manipulating files.
 
 ## Features
 
-- **Lightweight CLI**: Hamster is designed for quick interactions and minimal resource use.
-- **Secure Sandbox**: All commands and file operations are restricted to a contained environment to ensure safety and prevent unauthorized access.
-- **Interactive Command Guide**: Users can easily access help and commands directly from the CLI interface.
+- **Lightweight CLI**: Hamster is optimized for fast interactions and minimal resource consumption, making it suitable for developers who require efficiency in their workflow.
+  
+- **Secure Sandbox**: All command executions and file operations are confined to a dedicated environment, ensuring that sensitive data remains secure and unauthorized access is prevented.
+
+- **Interactive Command Guide**: Users have quick access to help and command overviews directly from the CLI interface, reducing the learning curve for new users.
 
 ## Setup
 
-To install and set up Hamster, follow these steps:
+To install and set up Hamster, follow these comprehensive steps:
 
-1. **Create a Virtual Environment**:
+1. **Create a Virtual Environment**: Itâs recommended to use Pythonâs built-in virtual environment support.
    ```bash
-   uv venv
+   python -m venv venv
    ```
 
-2. **Install Dependencies**:
-   Navigate to the project directory and install the package in editable mode using pip:
+2. **Install Dependencies**: Change to the project directory and install the package in editable mode using pip:
    ```bash
-   uv pip install -e .
+   pip install -e .
    ```
 
-3. **Configuration**:
-   Create or update a `.env` file in the project root directory with the following content:
+3. **Configuration**: Create a configuration file to set the necessary API credentials and operational parameters. Create or update a `.env` file in the project root directory with the following content:
    ```bash
    OPENROUTER_API_KEY=your_key_here   # Replace 'your_key_here' with your actual OpenRouter API key
-   MAX_TOKENS=4096                      # Maximum tokens for API requests
-   MAX_FAILURES=3                       # Number of allowed failures before halting
+   MAX_TOKENS=4096                      # Maximum number of tokens for processing API requests
+   MAX_FAILURES=3                       # Specifies the number of allowed failures before the application halts
    ```
 
-4. **Run Hamster**:
-   To start the Hamster CLI, use the following command:
+4. **Run Hamster**: To start the Hamster CLI and access its features, use the following command:
    ```bash
    hamster
    ```
 
-### Note:
-All tool file access is strictly confined to the `./sandbox/` directory.
+### Important Note:
+All tool file access is strictly contained to the `./sandbox/` directory, providing an additional layer of security during file operations.
 
 ## Available Commands
 
-Hamster provides a set of intuitive commands:
+Hamster provides an intuitive interface with several helpful commands. Here are some available commands:
 
 ```text
-/help             Display the interactive command guide for assistance and command overview.
-/search <query>   Utilize Hamster to search for relevant technical documentation or resources based on your query.
-/clear            Clear the terminal UI and redraw for a fresh view.
-/exit             Exit the Hamster environment and return to the shell.
+/help             Display the interactive command guide, offering assistance and an overview of available commands.
+/search <query>   Utilize Hamster to search for relevant technical documentation or resources based on your query. Ideal for finding quick answers or code examples.
+/clear            Clear the terminal UI and refresh the display for a clean workspace.
+/exit             Exit the Hamster environment and return to your standard shell.
 ```
 
-## Tooling Overview
+### Tooling Overview
 
-Hamster offers five key permission-gated tools designed to enhance functionality:
+Hamster features five key permission-gated tools that significantly enhance its functionality while adhering to security practices:
 
-- `search_codebase(query)`: Searches exclusively within the `./sandbox/` directory for relevant content.
-- `read_file(filepath)`: Safely reads files located within the `./sandbox/` directory, ensuring secure content access.
-- `edit_file_patch(filepath, target_text, replacement_text)`: Allows for surgical text replacements in a file located within `./sandbox/`, with previews of changes before applying.
-- `web_search(query)`: Conducts an approved search on DuckDuckGo to retrieve technical documentation relevant to the user's query.
-- `run_sandbox_command(command)`: Executes pre-approved commands in the sandbox environment, using filtration to ensure safety.
+- `search_codebase(query)`: Conducts searches exclusively within the `./sandbox/` directory for relevant content, enabling users to locate files and references quickly.
+  
+- `read_file(filepath)`: Safely reads files located within the `./sandbox/` directory, ensuring secure content access and protection against unauthorized modification.
+
+- `edit_file_patch(filepath, target_text, replacement_text)`: Facilitates surgical replacements in file text within the sandbox, providing previews of changes before final application for user approval.
+
+- `web_search(query)`: Performs an authorized search on DuckDuckGo, allowing access to technical documentation relevant to user queries, thereby assisting in troubleshooting and learning.
+
+- `run_sandbox_command(command)`: Executes pre-approved commands within the sandbox, employing filtering mechanisms to guarantee safety and prevent system alterations.
 
 ### Security Measures
-All requests for sandbox path access are rigorously validated to enforce absolute-path containment. Any attempts to escape the sandbox will result in a security violation response rather than a prompt.
+Hamster implements rigorous security protocols that validate all requests for sandbox path access. Attempts to escape the sandbox environment are strictly prohibited and generate a security violation response, safeguarding the integrity of the system.
 
 ## Conclusion
 
 **Conclusion**
 
-Hamster revolutionizes the workflow of software engineering by providing a secure and efficient Command Line Interface. It empowers developers with a range of versatile tools while maintaining stringent safety measures, ensuring that each operation is safe and controlled. By integrating Hamster into your development process, you can significantly enhance productivity and focus on what truly matters: writing great code.
-
+Hamster transforms software engineering workflows by offering a secure, efficient Command Line Interface tailored to developer needs. By providing an array of versatile tools while enforcing stringent security measures, Hamster ensures that each operation is safe and controlled. Integrating Hamster into your development process can significantly enhance productivity, allowing you to focus on what truly matters: writing exceptional code and building quality applications.
