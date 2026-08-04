@@ -37,7 +37,7 @@ To install and set up Hamster, follow these comprehensive steps:
    ```
 
 ### Important Note:
-All tool file access is strictly contained to the `./sandbox/` directory, providing an additional layer of security during file operations.
+All tool file access is strictly contained to a hidden OS-managed sandbox workspace. Completed, approved changes are applied back to the project incrementally.
 
 ## Available Commands
 
@@ -54,9 +54,9 @@ Hamster provides an intuitive interface with several helpful commands. Here are 
 
 Hamster features five key permission-gated tools that significantly enhance its functionality while adhering to security practices:
 
-- `search_codebase(query)`: Conducts searches exclusively within the `./sandbox/` directory for relevant content, enabling users to locate files and references quickly.
+- `search_codebase(query)`: Conducts searches exclusively within the hidden sandbox workspace, enabling users to locate files and references quickly.
   
-- `read_file(filepath)`: Safely reads files located within the `./sandbox/` directory, ensuring secure content access and protection against unauthorized modification.
+- `read_file(filepath)`: Safely reads files located within the hidden sandbox workspace, ensuring secure content access and protection against unauthorized modification.
 
 - `edit_file_patch(filepath, target_text, replacement_text)`: Facilitates surgical replacements in file text within the sandbox, providing previews of changes before final application for user approval.
 

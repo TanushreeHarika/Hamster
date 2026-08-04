@@ -22,7 +22,7 @@ class TestConsentFlow(unittest.TestCase):
         self.p1.start(); self.p2.start(); self.p3.start()
 
         init_session_state()
-        self.sandbox = TempSandbox()
+        self.sandbox = TempSandbox(project_root=self.test_project)
         configure_sandbox(self.sandbox)
 
         self.sessions = SessionManager()

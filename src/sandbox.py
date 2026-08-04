@@ -1,15 +1,15 @@
 """OS-level temporary sandbox for Hamster.
 
 Creates an isolated, session-scoped directory under the OS temp root
-(e.g. /tmp/hamster-sandbox-<hex>/).  The real project directory is
-never touched during the draft phase; changes are promoted to the
-project root only via an explicit apply operation.
+(e.g. /tmp/hamster-sandbox-<hex>/). The real project directory is copied
+into the sandbox before work begins, and the original project is never
+touched during the draft phase.
 
 Layout::
 
     <temp>/
-        mirror/   <- lazy copies of existing project files
-        new/      <- brand-new files created by write_file
+        baseline/   <- pristine copy used to compute deltas
+        workspace/  <- mutable project copy used by all tools
 """
 
 from __future__ import annotations
@@ -34,11 +34,14 @@ class TempSandbox:
             sandbox.destroy()
     """
 
-    def __init__(self) -> None:
+    def __init__(self, project_root: str | Path | None = None) -> None:
         prefix = f"hamster-sandbox-{uuid.uuid4().hex[:8]}-"
         self._root = Path(tempfile.mkdtemp(prefix=prefix))
-        (self._root / "mirror").mkdir(parents=True, exist_ok=True)
-        (self._root / "new").mkdir(parents=True, exist_ok=True)
+        self.project_root = Path(project_root or Path.cwd()).resolve()
+        self._baseline = self._root / "baseline"
+        self._workspace = self._root / "workspace"
+        self._copy_project(self.project_root, self._workspace)
+        self._copy_project(self._workspace, self._baseline)
         self._destroyed = False
         atexit.register(self._cleanup_on_exit)
 
@@ -52,6 +55,16 @@ class TempSandbox:
         return self._root
 
     @property
+    def workspace(self) -> Path:
+        """Mutable project copy used as the agent working directory."""
+        return self._workspace
+
+    @property
+    def baseline(self) -> Path:
+        """Pristine project copy used to compute changes at apply time."""
+        return self._baseline
+
+    @property
     def is_destroyed(self) -> bool:
         """True after destroy() has been called."""
         return self._destroyed
@@ -60,26 +73,53 @@ class TempSandbox:
     # Path helpers
     # ------------------------------------------------------------------
 
-    def mirror_path(self, relative: str) -> Path:
-        """Absolute path inside ``mirror/`` for a real-project file.
-
-        The path is constructed from *relative* (a project-root-relative
-        path such as ``"hamster/agent.py"`` or ``"README.md"``).
-        Parent directories are created automatically.
-        """
-        dest = self._root / "mirror" / relative.lstrip("/")
+    def workspace_path(self, relative: str) -> Path:
+        """Absolute path inside the mutable sandbox workspace."""
+        dest = (self._workspace / relative.lstrip("/")).resolve()
+        workspace = self._workspace.resolve()
+        if dest != workspace and workspace not in dest.parents:
+            raise ValueError(f"Path escapes sandbox workspace: {relative!r}")
         dest.parent.mkdir(parents=True, exist_ok=True)
         return dest
+
+    def mirror_path(self, relative: str) -> Path:
+        """Compatibility alias for older callers."""
+        return self.workspace_path(relative)
 
     def new_path(self, relative: str) -> Path:
-        """Absolute path inside ``new/`` for a brand-new file.
+        """Compatibility alias for older callers."""
+        return self.workspace_path(relative)
 
-        Use this for files that do not exist in the project root yet.
-        Parent directories are created automatically.
-        """
-        dest = self._root / "new" / relative.lstrip("/")
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        return dest
+    # ------------------------------------------------------------------
+    # Copy helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _ignore_project_entries(_directory: str, names: list[str]) -> set[str]:
+        ignored = {
+            ".git",
+            ".hg",
+            ".svn",
+            ".venv",
+            "venv",
+            "__pycache__",
+            ".pytest_cache",
+            ".mypy_cache",
+            ".ruff_cache",
+            "node_modules",
+            "dist",
+            "build",
+            "sandbox",
+        }
+        return {name for name in names if name in ignored}
+
+    def _copy_project(self, source: Path, dest: Path) -> None:
+        shutil.copytree(
+            source,
+            dest,
+            symlinks=True,
+            ignore=self._ignore_project_entries,
+        )
 
     # ------------------------------------------------------------------
     # Lifecycle

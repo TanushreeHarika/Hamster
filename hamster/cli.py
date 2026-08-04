@@ -9,6 +9,7 @@ from hamster.openrouter import OpenRouterClient
 from hamster.tools import (
     cleanup_sandbox,
     configure_sandbox,
+    has_pending_sandbox_changes,
     init_session_state,
     list_sandbox_files,
     run_sandbox_command,
@@ -22,7 +23,6 @@ from src.transactions import snapshot_files, rollback_snapshot, FileSnapshot
 
 
 def _ensure_foundation(project_root: Path) -> None:
-    (project_root / "sandbox").mkdir(exist_ok=True)
     env_path = project_root / ".env"
     if not env_path.exists():
         env_path.write_text(
@@ -34,9 +34,13 @@ def _ensure_foundation(project_root: Path) -> None:
 def main() -> None:
     project_root = Path.cwd()
     _ensure_foundation(project_root)
-    # Initialize an ephemeral TempSandbox for the interactive session.
-    sandbox = TempSandbox()
-    configure_sandbox(sandbox)
+
+    def start_sandbox() -> TempSandbox:
+        sandbox = TempSandbox(project_root=project_root)
+        configure_sandbox(sandbox)
+        return sandbox
+
+    sandbox = start_sandbox()
     init_session_state()
     session_manager = SessionManager()
     rpc_gateway = RPCGateway(session_manager)
@@ -87,6 +91,7 @@ def main() -> None:
         if user_input == "/apply":
             from hamster.tools import apply_sandbox_to_root
             print(f"{apply_sandbox_to_root()}\n")
+            sandbox = start_sandbox()
             continue
         if user_input == "/sync":
             from hamster.tools import sync_workspace_to_sandbox
@@ -131,6 +136,11 @@ def main() -> None:
 
         messages.append({"role": "user", "content": user_input})
         run_agent_turn(client, messages, config.max_failures)
+        if has_pending_sandbox_changes():
+            print(f"{apply_sandbox_to_root(project_root=project_root)}\n")
+        else:
+            cleanup_sandbox()
+        sandbox = start_sandbox()
 
 
 if __name__ == "__main__":
@@ -175,7 +185,7 @@ if __name__ == "__main__":
         if not cmd:
             print("No command provided.")
             sys.exit(2)
-        sandbox = TempSandbox()
+        sandbox = TempSandbox(project_root=Path.cwd())
         configure_sandbox(sandbox)
         init_session_state()
         try:
