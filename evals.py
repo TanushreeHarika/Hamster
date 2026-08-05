@@ -45,7 +45,7 @@ ENV_PATH = PROJECT_ROOT / ".env"
 
 SYSTEM_PROMPT = (
     "You are Hamster, a production-grade CLI software engineering agent. "
-    "Your file tools are physically restricted to a hidden sandbox workspace and security violations are non-negotiable. "
+    "Your file tools are restricted to the current project and security violations are non-negotiable. "
     "Never claim to have inspected files unless you used read_file or search_codebase. "
     "Prefer small, surgical edits through edit_file_patch. "
     "If a tool returns an error or SECURITY VIOLATION, adjust your next step."
@@ -56,7 +56,7 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "search_codebase",
-            "description": "Search for string matches inside the hidden sandbox workspace only.",
+            "description": "Search for string matches inside the current project only.",
             "parameters": {
                 "type": "object",
                 "properties": {"query": {"type": "string"}},
@@ -69,7 +69,7 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "read_file",
-            "description": "Read a specific file inside the hidden sandbox workspace only.",
+            "description": "Read a specific project file by relative path.",
             "parameters": {
                 "type": "object",
                 "properties": {"filepath": {"type": "string"}},
@@ -82,7 +82,7 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "edit_file_patch",
-            "description": "Replace one exact target text block inside the hidden sandbox workspace only.",
+            "description": "Replace one exact target text block inside a project file.",
             "parameters": {
                 "type": "object",
                 "properties": {

@@ -4,7 +4,7 @@ import json
 from typing import Any
 
 from hamster.openrouter import OpenRouterClient, StreamResult
-from hamster.tools import TOOL_FUNCTIONS
+from hamster.tools import TOOL_FUNCTIONS, has_pending_sandbox_changes
 from hamster.ui import print_assistant_delta, render_model_error, render_tool_result, remote_status, status
 
 try:
@@ -13,30 +13,36 @@ except Exception:  # pragma: no cover - optional utility import
     compact_context = None
 
 
-SYSTEM_PROMPT = """You are Hamster, a production-grade CLI software engineering agent.
+VERBOSE_CODE_MARKERS = ("```", "<!DOCTYPE html", "<html", "diff --git", "--- ", "+++ ")
 
-ARCHITECTURE — STRICT SANDBOX ISOLATION:
-- All file creations, edits, searches, and terminal commands are STRICTLY jailed inside the internal sandbox workspace.
-- The real project root is NEVER modified directly by file tools.
-- The sandbox is a hidden full copy of the project with a baseline used for delta application.
-- When you approve an edit or creation, it is applied ONLY to the sandbox workspace.
-- At normal task completion, pending sandbox changes are applied back to the real repository and the sandbox is destroyed.
+
+SYSTEM_PROMPT = """You are Hamster, a production-grade CLI software engineering agent with a distinct character.
+
+CHARACTER:
+- You are cute, supportive, funny, and lightly flirty in a charming non-sexual way.
+- You feel like a tiny confident coding partner: warm, quick, encouraging, and a little cheeky.
+- You can say small things like "I've got you", "clean little move", or "nice, that's tucked in" when it fits.
+- Keep the charm brief. The work stays professional, accurate, and useful.
+- Never sound like a corporate assistant or a generic robot.
+
+WORKFLOW:
+1. Use search_codebase to locate code patterns across the project.
+2. Use read_file("relative/path") to inspect a file.
+3. Use write_file("relative/path", content) to create files or replace an entire file for broad rewrites.
+4. Use edit_file_patch("relative/path", target_text, replacement_text) only for small exact surgical edits.
+5. Use run_sandbox_command for exploratory shell commands.
+6. Use web_search only for technical documentation, APIs, syntax examples, or library verification.
 
 PATH CONVENTIONS:
 - Always use ROOT-RELATIVE paths: "hamster/agent.py", "README.md", "src/security.py".
-- NEVER prefix paths with "sandbox/".
-
-WORKFLOW:
-1. Use search_codebase to locate code patterns across the sandbox workspace.
-2. Use read_file("relative/path") to inspect a file.
-3. Use write_file("new_file.py", content) to create new files in the sandbox workspace.
-4. Use edit_file_patch("relative/path", target_text, replacement_text) to make surgical edits.
-5. Use run_sandbox_command for exploratory shell commands inside the sandbox workspace.
-6. Use web_search only for technical documentation, APIs, syntax examples, or library verification.
+- Never describe internal file isolation or draft storage to the user.
 
 RULES:
 - Never claim to have inspected files unless you used read_file or search_codebase.
-- Prefer small, surgical edits. If a tool returns an error or SECURITY VIOLATION, adjust your approach.
+- Do not paste full file contents, generated code, or long diffs into chat. The user can press `v` at the save prompt to view code changes.
+- For broad rewrites, read the current file, then use write_file with the full updated content.
+- Prefer small, surgical edits when they are reliable. If a tool returns an error or SECURITY VIOLATION, adjust your approach.
+- When a file task succeeds, keep the visible response short and friendly. Do not describe internal execution details.
 - ripgrep (rg) must be installed for search_codebase. Install with: brew install ripgrep"""
 
 
@@ -63,6 +69,16 @@ def execute_tool_call(tool_call: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def should_suppress_assistant_content(content: str) -> bool:
+    """Hide verbose generated code when a save prompt will show the review path."""
+    if not has_pending_sandbox_changes():
+        return False
+    lowered = content.lower()
+    if any(marker.lower() in lowered for marker in VERBOSE_CODE_MARKERS):
+        return True
+    return len(content.splitlines()) > 12
+
+
 def run_agent_turn(client: OpenRouterClient, messages: list[dict[str, Any]], max_failures: int) -> None:
     failures = 0
     if compact_context is not None:
@@ -70,6 +86,7 @@ def run_agent_turn(client: OpenRouterClient, messages: list[dict[str, Any]], max
 
     while True:
         final_result: StreamResult | None = None
+        buffered_content: list[str] = []
         waiting = remote_status("⏳ Waiting on OpenRouter model response...")
         waiting_active = False
         try:
@@ -82,8 +99,7 @@ def run_agent_turn(client: OpenRouterClient, messages: list[dict[str, Any]], max
                 if isinstance(event, StreamResult):
                     final_result = event
                 else:
-                    print_assistant_delta(event)
-            print()
+                    buffered_content.append(event)
         except Exception as exc:
             if waiting_active:
                 waiting.__exit__(None, None, None)
@@ -111,6 +127,10 @@ def run_agent_turn(client: OpenRouterClient, messages: list[dict[str, Any]], max
         messages.append(assistant_message)
         tool_calls = assistant_message.get("tool_calls") or []
         if not tool_calls:
+            content = "".join(buffered_content)
+            if content and not should_suppress_assistant_content(content):
+                print_assistant_delta(content)
+                print()
             return
 
         for tool_call in tool_calls:

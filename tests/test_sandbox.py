@@ -7,6 +7,8 @@ from unittest.mock import patch
 
 from src.sandbox import TempSandbox
 from hamster.tools import (
+    TOOL_FUNCTIONS,
+    TOOL_SCHEMAS,
     configure_sandbox,
     init_session_state,
     read_file,
@@ -28,13 +30,9 @@ class TestSandbox(unittest.TestCase):
         self.mock_file = self.test_project / "mock_config.py"
         self.mock_file.write_text('APP_NAME = "hamster-legacy"\n', encoding="utf-8")
         
-        # Patch the UI prompts to automatically approve everything
+        # Patch read/command prompts to automatically approve everything
         self.patcher1 = patch("hamster.tools.confirm", return_value=True)
-        self.patcher2 = patch("hamster.tools.render_diff")
-        self.patcher4 = patch("hamster.tools.request_approval", return_value="yes")
         self.patcher1.start()
-        self.patcher2.start()
-        self.patcher4.start()
         
         # Patch the tools._project_root to point to our test project
         self.patcher3 = patch("hamster.tools._project_root", return_value=str(self.test_project))
@@ -49,8 +47,6 @@ class TestSandbox(unittest.TestCase):
 
     def tearDown(self):
         self.patcher1.stop()
-        self.patcher2.stop()
-        self.patcher4.stop()
         self.patcher3.stop()
         self.sandbox.destroy()
 
@@ -64,7 +60,7 @@ class TestSandbox(unittest.TestCase):
         self.assertFalse(str(self.sandbox.root).startswith(str(self.test_project)))
 
     def test_workspace_reading(self):
-        # Reading a file should read from the hidden workspace
+        # Reading a file should read from the draft workspace
         content = read_file("mock_config.py")
         self.assertIn("hamster-legacy", content)
         
@@ -73,9 +69,9 @@ class TestSandbox(unittest.TestCase):
         self.assertEqual(workspace_path.read_text(encoding="utf-8"), 'APP_NAME = "hamster-legacy"\n')
 
     def test_editing(self):
-        # Editing should only affect the sandbox mirror, not the real project
+        # Editing should only affect the draft workspace, not the real project
         res = edit_file_patch("mock_config.py", 'APP_NAME = "hamster-legacy"', 'APP_NAME = "hamster"')
-        self.assertIn("Patched mock_config.py", res)
+        self.assertIn("Updated mock_config.py", res)
         
         workspace_path = self.sandbox.workspace / "mock_config.py"
         self.assertEqual(workspace_path.read_text(encoding="utf-8"), 'APP_NAME = "hamster"\n')
@@ -83,10 +79,24 @@ class TestSandbox(unittest.TestCase):
         # Real project file remains unchanged
         self.assertEqual(self.mock_file.read_text(encoding="utf-8"), 'APP_NAME = "hamster-legacy"\n')
 
+    def test_editing_does_not_prompt_per_change(self):
+        with patch("hamster.tools.confirm") as mocked_confirm:
+            res = edit_file_patch("mock_config.py", 'APP_NAME = "hamster-legacy"', 'APP_NAME = "hamster"')
+
+        self.assertIn("Updated mock_config.py", res)
+        mocked_confirm.assert_not_called()
+
+    def test_missing_patch_target_is_recoverable_tool_result(self):
+        res = edit_file_patch("mock_config.py", "DOES_NOT_EXIST", "replacement")
+
+        self.assertIn("Target text was not found", res)
+        self.assertIn("use write_file", res)
+        self.assertFalse(res.startswith("ERROR"))
+
     def test_new_file_creation(self):
         # Creating a new file should put it in the workspace
         res = write_file("new_folder/new_file.txt", "Hello World")
-        self.assertIn("Successfully created", res)
+        self.assertIn("Wrote new_folder/new_file.txt", res)
         
         new_path = self.sandbox.workspace / "new_folder" / "new_file.txt"
         self.assertTrue(new_path.exists())
@@ -94,6 +104,18 @@ class TestSandbox(unittest.TestCase):
         
         # Real project doesn't have it yet
         self.assertFalse((self.test_project / "new_folder" / "new_file.txt").exists())
+
+    def test_write_file_does_not_prompt_per_change(self):
+        with patch("hamster.tools.confirm") as mocked_confirm:
+            res = write_file("new_folder/quiet.txt", "Hello")
+
+        self.assertIn("Wrote new_folder/quiet.txt", res)
+        mocked_confirm.assert_not_called()
+
+    def test_model_cannot_apply_changes_directly(self):
+        tool_names = {schema["function"]["name"] for schema in TOOL_SCHEMAS}
+        self.assertNotIn("apply_sandbox_to_root", tool_names)
+        self.assertNotIn("apply_sandbox_to_root", TOOL_FUNCTIONS)
 
     def test_apply_sandbox_to_root(self):
         # Stage an edit
@@ -103,7 +125,7 @@ class TestSandbox(unittest.TestCase):
         
         # Apply
         res = apply_sandbox_to_root(project_root=self.test_project)
-        self.assertIn("Applied", res)
+        self.assertIn("Saved", res)
         
         # Project should now be updated
         self.assertEqual(self.mock_file.read_text(encoding="utf-8"), 'APP_NAME = "hamster"\n')
@@ -117,7 +139,7 @@ class TestSandbox(unittest.TestCase):
         (self.sandbox.workspace / "mock_config.py").unlink()
 
         res = apply_sandbox_to_root(project_root=self.test_project)
-        self.assertIn("deleted 1 file", res)
+        self.assertIn("removed 1 file", res)
         self.assertFalse(self.mock_file.exists())
 
     def test_apply_skips_concurrent_project_changes(self):
@@ -125,7 +147,7 @@ class TestSandbox(unittest.TestCase):
         self.mock_file.write_text('APP_NAME = "user-change"\n', encoding="utf-8")
 
         res = apply_sandbox_to_root(project_root=self.test_project)
-        self.assertIn("Skipped 1 conflict", res)
+        self.assertIn("Could not save", res)
         self.assertEqual(self.mock_file.read_text(encoding="utf-8"), 'APP_NAME = "user-change"\n')
 
     def test_idempotent_destroy(self):

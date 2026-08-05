@@ -88,16 +88,16 @@ def print_logo() -> None:
             Align.center(logo_text),
             border_style=THEME["primary"],
             padding=(0, 2),
-            subtitle=f"[dim]🐹 Hamster — sandboxed OpenRouter engineering agent[/dim]",
+            subtitle=f"[dim]🐹 Hamster — OpenRouter engineering agent[/dim]",
         )
     )
     metrics = Table.grid(padding=(0, 2))
     metrics.add_column(style="bold white")
     metrics.add_column(style="dim")
-    metrics.add_row("Tools", "search_codebase · read_file · edit_file_patch · web_search · run_sandbox_command")
-    metrics.add_row("Boundary", "hidden workspace — absolute path containment enforced")
-    metrics.add_row("Approval", "hard y/n gate before every tool call and network action")
-    metrics.add_row("Requirements", "ripgrep (rg) for search — install with: brew install ripgrep")
+    metrics.add_row("Flow", "draft quietly · review once · save or discard")
+    metrics.add_row("Review", "press v at the save prompt to inspect code")
+    metrics.add_row("Mood", "supportive, sharp, tiny bit cheeky")
+    metrics.add_row("Search", "ripgrep required · brew install ripgrep")
     console.print(Panel(metrics, border_style="gold3", title="[bold gold3]Ready[/]", title_align="left"))
 
 
@@ -122,11 +122,11 @@ def print_help() -> None:
     table.add_column("Command", style=f"bold {THEME['secondary']}", no_wrap=True)
     table.add_column("Action", style="white")
     table.add_row("/help", "Show this command guide")
-    table.add_row("/files", "List all files in the hidden workspace")
+    table.add_row("/files", "List files in the current draft")
     table.add_row("/search <query>", "Ask Hamster to search technical documentation")
-    table.add_row("/pending", "Show pending sandbox changes")
-    table.add_row("/apply", "Apply sandbox changes to the project root")
-    table.add_row("/sync", "Refresh sandbox workspace state")
+    table.add_row("/pending", "Show pending draft changes")
+    table.add_row("/apply", "Save pending draft changes")
+    table.add_row("/sync", "Refresh draft state")
     table.add_row("/clear", "Clear the terminal and redraw the splash")
     table.add_row("/exit", "Leave Hamster (prints farewell graphic)")
     console.print(table)
@@ -182,64 +182,47 @@ def render_security_violation(message: str) -> None:
     console.print(Panel(message, title="Security Violation", border_style="bold red", style="red"))
 
 
-def request_approval(
-    prompt: str,
-    filepath: str | None = None,
-    additions: int | None = None,
-    deletions: int | None = None,
-    allow_view: bool = True,
-) -> str:
-    summary_parts = [prompt]
-    if filepath is not None:
-        summary_parts.append(f"File: {filepath}")
-    if additions is not None and deletions is not None:
-        summary_parts.append(f"Changes: +{additions} -{deletions}")
-    if allow_view:
-        summary_parts.append("[dim]Press v to view the diff before approving. Use a to approve all future low-risk fixes for this task.[/dim]")
-    body = "\n".join(summary_parts)
+def request_save_changes(changes: list[str], diff_lines: list[str]) -> str:
+    body = "\n".join(["I drafted the changes. Looking good from here.", "", *changes[:20]])
+    if len(changes) > 20:
+        body += f"\n... and {len(changes) - 20} more"
+    body += "\n\nSave everything, discard everything, or peek at the diff first."
 
     options = Table.grid(padding=(0, 1))
     options.add_column(no_wrap=True)
     options.add_column()
-    options.add_row("[green]y[/]", "approve once")
-    options.add_row("[red]n[/]", "deny")
-    options.add_row("[cyan]a[/]", "approve all low-risk actions")
-    if allow_view:
-        options.add_row("[yellow]v[/]", "view full detail")
-
-    console.print(
-        Panel(
-            Text(body, style="white"),
-            title="[bold]🐹 Hamster Approval[/]",
-            subtitle="Select an option and press Enter.",
-            border_style=THEME["primary"],
-            padding=(1, 2),
-        )
-    )
-    console.print(options)
-
-    prompt_text = (
-        f"[bold {THEME['primary']}]Approve?[/] "
-        f"[green]y[/]/[red]n[/]/[cyan]a[/]"
-    )
-    if allow_view:
-        prompt_text += f"/[yellow]v[/]"
-    prompt_text += " ([dim]n[/]): "
+    options.add_row("[bold green]a[/]", "save all")
+    options.add_row("[bold red]r[/]", "discard all")
+    options.add_row("[bold yellow]v[/]", "view diff")
 
     while True:
-        answer = prompt_user(prompt_text).strip().lower()
-        if answer in {"y", "yes"}:
-            return "yes"
-        if answer in {"n", "no", ""}:
-            return "no"
-        if answer == "a":
-            return "all"
-        if allow_view and answer == "v":
-            return "view"
-        if allow_view:
-            console.print("Please answer y, n, a, or v.", style=THEME["warning"])
-        else:
-            console.print("Please answer y, n, or a.", style=THEME["warning"])
+        panel_body = Table.grid(expand=True)
+        panel_body.add_column()
+        panel_body.add_row(Text(body, style="white"))
+        panel_body.add_row("")
+        panel_body.add_row(options)
+        console.print(
+            Panel(
+                panel_body,
+                title="[bold gold3]Review Changes[/]",
+                subtitle="[dim]a save all · r discard all · v view diff[/dim]",
+                border_style=THEME["primary"],
+                box=box.ROUNDED,
+                padding=(1, 2),
+            )
+        )
+        answer = prompt_user(
+            f"[bold {THEME['primary']}]Choice[/] "
+            f"[green]a[/]/[red]r[/]/[yellow]v[/] ([dim]r[/]): "
+        ).strip().lower()
+        if answer in {"a", "accept", "accept all", "y", "yes"}:
+            return "accept"
+        if answer in {"r", "reject", "reject all", "n", "no", ""}:
+            return "reject"
+        if answer in {"v", "view"}:
+            render_diff("Draft changes", diff_lines)
+            continue
+        console.print("Please answer a, r, or v.", style=THEME["warning"])
 
 
 def render_tool_result(name: str, content: str) -> None:
@@ -273,7 +256,7 @@ def prompt_user(prompt: str) -> str:
 
 
 def status(message: str):
-    """Generic status spinner (used for local sandbox ops — fast, bright)."""
+    """Generic status spinner (used for fast local operations)."""
     return console.status(message, spinner="dots", spinner_style="gold3")
 
 
@@ -281,16 +264,16 @@ def remote_status(message: str):
     """Visually distinct spinner for remote OpenRouter API calls (slow network).
 
     Uses a slower 'earth' spinner and a muted blue style so operators can
-    immediately distinguish remote model latency from rapid local sandbox ops.
+    immediately distinguish remote model latency from rapid local operations.
     """
     return console.status(message, spinner="earth", spinner_style="steel_blue1")
 
 
 def sandbox_status(message: str):
-    """Explicit spinner for fast local sandbox operations (reads, patches, search).
+    """Explicit spinner for fast local operations (reads, patches, search).
 
     Uses the 'dots2' spinner and gold styling to signal an in-process,
-    approval-gated sandbox action rather than a remote call.
+    approval-gated local action rather than a remote call.
     """
     return console.status(message, spinner="dots2", spinner_style="gold3")
 

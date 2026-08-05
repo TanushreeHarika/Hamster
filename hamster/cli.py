@@ -9,14 +9,19 @@ from hamster.openrouter import OpenRouterClient
 from hamster.tools import (
     cleanup_sandbox,
     configure_sandbox,
+    discard_sandbox_changes,
     has_pending_sandbox_changes,
     init_session_state,
     list_sandbox_files,
+    pending_change_diff,
+    pending_change_summary,
+    review_changes,
     run_sandbox_command,
     apply_sandbox_to_root,
     get_session_state,
+    sync_workspace_to_sandbox,
 )
-from hamster.ui import clear_screen, print_exit_logo, print_help, print_logo, prompt_user
+from hamster.ui import clear_screen, print_exit_logo, print_help, print_logo, prompt_user, request_save_changes
 from hamster.rpc import SessionManager, RPCGateway
 from src.sandbox import TempSandbox
 from src.transactions import snapshot_files, rollback_snapshot, FileSnapshot
@@ -56,21 +61,21 @@ def main() -> None:
     client = OpenRouterClient(config)
     messages = initial_messages()
 
-    print("Type /help for commands. All tools require explicit approval.\n")
+    print("Type /help for commands. Changes are reviewed once at the end of each task.\n")
     while True:
         try:
             user_input = prompt_user("[bold gold3]hamster>[/] ").strip()
         except (EOFError, KeyboardInterrupt):
             print()
             print_exit_logo()
-            print(cleanup_sandbox())
+            cleanup_sandbox()
             return
 
         if not user_input:
             continue
         if user_input == "/exit":
             print_exit_logo()
-            print(cleanup_sandbox())
+            cleanup_sandbox()
             return
         if user_input == "/help":
             print_help()
@@ -80,21 +85,17 @@ def main() -> None:
             print_logo()
             continue
         if user_input == "/files":
-            from hamster.tools import list_sandbox_files
             files = list_sandbox_files()
             print(f"{files}\n")
             continue
         if user_input == "/pending":
-            from hamster.tools import review_changes
             print(f"{review_changes()}\n")
             continue
         if user_input == "/apply":
-            from hamster.tools import apply_sandbox_to_root
             print(f"{apply_sandbox_to_root()}\n")
             sandbox = start_sandbox()
             continue
         if user_input == "/sync":
-            from hamster.tools import sync_workspace_to_sandbox
             print(f"{sync_workspace_to_sandbox()}\n")
             continue
         if user_input.startswith("/search "):
@@ -137,7 +138,11 @@ def main() -> None:
         messages.append({"role": "user", "content": user_input})
         run_agent_turn(client, messages, config.max_failures)
         if has_pending_sandbox_changes():
-            print(f"{apply_sandbox_to_root(project_root=project_root)}\n")
+            decision = request_save_changes(pending_change_summary(), pending_change_diff())
+            if decision == "accept":
+                print(f"{apply_sandbox_to_root(project_root=project_root)}\n")
+            else:
+                print(f"{discard_sandbox_changes()}\n")
         else:
             cleanup_sandbox()
         sandbox = start_sandbox()
@@ -149,7 +154,7 @@ if __name__ == "__main__":
 
     sub.add_parser("start", help="Start interactive Hamster session")
 
-    p_exec = sub.add_parser("exec", help="Run a sandboxed shell command")
+    p_exec = sub.add_parser("exec", help="Run a checked shell command")
     p_exec.add_argument("command", nargs=argparse.REMAINDER, help="Command to run")
 
     p_snap = sub.add_parser("snapshot", help="Snapshot one or more filesystem paths")
@@ -159,7 +164,7 @@ if __name__ == "__main__":
     p_restore = sub.add_parser("restore", help="Restore from a snapshot JSON file")
     p_restore.add_argument("snapshot_file", help="Snapshot JSON file produced by `snapshot`")
 
-    p_diff = sub.add_parser("diff", help="Show sandbox file listing")
+    p_diff = sub.add_parser("diff", help="Show draft file listing")
     p_diff.add_argument("--pattern", "-p", default="", help="Filter pattern")
 
     p_approve = sub.add_parser("approve", help="Approve read scope for the session")

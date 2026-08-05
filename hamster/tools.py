@@ -12,9 +12,7 @@ from src.sandbox import TempSandbox
 from src.security import assert_sandbox_path, PathSecurityViolation
 from hamster.ui import (
     confirm,
-    render_diff,
     render_security_violation,
-    request_approval,
     sandbox_status,
     status,
 )
@@ -42,7 +40,6 @@ class SessionState:
     def __init__(self) -> None:
         self.read_approved = False
         self.approved_read_scopes: set[str] = set()
-        self.low_risk_actions_approved = False
 
     def approve_read(self, scope: str = "sandbox") -> None:
         """Mark read operations as approved for the given scope."""
@@ -52,13 +49,6 @@ class SessionState:
     def is_read_approved(self, scope: str = "sandbox") -> bool:
         """Check if read operations are approved for the given scope."""
         return scope in self.approved_read_scopes
-
-    def approve_low_risk_actions(self) -> None:
-        """Mark low-risk tool actions as approved for the current session."""
-        self.low_risk_actions_approved = True
-
-    def is_low_risk_actions_approved(self) -> bool:
-        return self.low_risk_actions_approved
 
 
 # Global session state — initialized by init_session_state()
@@ -149,7 +139,7 @@ def _stage_file_to_sandbox(filepath: str) -> str:
     sandbox = _get_sandbox()
     staged = sandbox.workspace_path(filepath)
     if not staged.is_file():
-        raise FileNotFoundError(f"File not found in sandbox workspace: {staged!r}")
+        raise FileNotFoundError(f"File not found in draft workspace: {staged!r}")
     return str(staged)
 
 
@@ -257,8 +247,8 @@ def search_codebase(query: str) -> str:
 
 
 def read_file(filepath: str) -> str:
-    """Read *filepath* from the sandbox workspace."""
-    # Security: validate path won't escape sandbox
+    """Read *filepath* from the draft workspace."""
+    # Security: validate path won't escape the draft workspace.
     sandbox = _get_sandbox()
     root_str = str(sandbox.workspace)
     try:
@@ -273,7 +263,7 @@ def read_file(filepath: str) -> str:
         session.approve_read("codebase")
 
     try:
-        with sandbox_status("📄 Staging & reading..."):
+        with sandbox_status("📄 Reading file..."):
             staged = _stage_file_to_sandbox(filepath)
             return Path(staged).read_text(encoding="utf-8")
     except FileNotFoundError as exc:
@@ -281,14 +271,12 @@ def read_file(filepath: str) -> str:
 
 
 def edit_file_patch(filepath: str, target_text: str, replacement_text: str) -> str:
-    """Edit a file using a text-replacement patch with user approval.
+    """Draft a file edit using a text-replacement patch.
 
     Workflow:
-      1. Read the file from the sandbox workspace.
-      2. Apply the text replacement on the workspace copy.
-      3. Ask for approval before applying; show diff only when requested.
-      4. On approval: write the updated content back to the workspace copy only.
-         The real project file remains untouched until apply_sandbox_to_root.
+      1. Read the file from the draft workspace.
+      2. Apply the text replacement on the draft copy.
+      3. The project file is saved only after final task approval.
     """
     sandbox = _get_sandbox()
     root_str = str(sandbox.workspace)
@@ -298,72 +286,41 @@ def edit_file_patch(filepath: str, target_text: str, replacement_text: str) -> s
         return _security_violation(str(exc))
 
     try:
-        with sandbox_status("📋 Staging file..."):
+        with sandbox_status("📋 Opening file..."):
             staged = _stage_file_to_sandbox(filepath)
     except FileNotFoundError:
-        return f"File not found in project root: {filepath}"
+        return f"File not found: {filepath}"
 
     original = Path(staged).read_text(encoding="utf-8")
     if target_text not in original:
-        raise ValueError(f"Target text was not found in {filepath}.")
+        return (
+            f"Target text was not found in {filepath}. "
+            "For broad rewrites, read the current file and use write_file with the full updated content."
+        )
 
     replaced_count = original.count(target_text)
     if replaced_count == 0:
-        raise ValueError(f"Target text was not found in {filepath}.")
+        return (
+            f"Target text was not found in {filepath}. "
+            "For broad rewrites, read the current file and use write_file with the full updated content."
+        )
 
     updated = original.replace(target_text, replacement_text)
-    diff_lines = _make_patch_preview(filepath, original, updated)
-    additions = sum(1 for l in diff_lines if l.startswith("+") and not l.startswith("+++ "))
-    deletions = sum(1 for l in diff_lines if l.startswith("-") and not l.startswith("--- "))
 
-    session = get_session_state()
-    if not session.is_low_risk_actions_approved():
-        while True:
-            action = request_approval(
-                f"Edit {filepath}: replace {replaced_count} occurrence{'s' if replaced_count != 1 else ''}",
-                filepath=filepath,
-                additions=additions,
-                deletions=deletions,
-            )
-            if action == "view":
-                render_diff(filepath, diff_lines)
-                continue
-            if action == "no":
-                return "Denied."
-            if action == "all":
-                session.approve_low_risk_actions()
-            break
-
-    with sandbox_status("✏️  Patching sandbox copy..."):
+    with sandbox_status("✏️  Updating file..."):
         Path(staged).write_text(updated, encoding="utf-8")
 
-    return f"Patched {filepath}: replaced 1 occurrence in sandbox workspace."
+    return f"Updated {filepath}: replaced {replaced_count} occurrence{'s' if replaced_count != 1 else ''}."
 
 
 def write_file(filepath: str, content: str) -> str:
-    """Create or overwrite a file inside the sandbox workspace."""
+    """Create or overwrite a draft file."""
     sandbox = _get_sandbox()
     try:
         dest = sandbox.new_path(filepath)
-        original = dest.read_text(encoding="utf-8") if dest.exists() else ""
-        diff_lines = _make_patch_preview(filepath, original, content)
-        additions = sum(1 for l in diff_lines if l.startswith("+") and not l.startswith("+++ "))
-        deletions = sum(1 for l in diff_lines if l.startswith("-") and not l.startswith("--- "))
-        session = get_session_state()
-        if not session.is_low_risk_actions_approved():
-            while True:
-                action = request_approval(f"Create file: {filepath}", filepath=filepath, additions=additions, deletions=deletions)
-                if action == "view":
-                    render_diff(filepath, diff_lines)
-                    continue
-                if action == "no":
-                    return "File creation denied by user."
-                if action == "all":
-                    session.approve_low_risk_actions()
-                break
-        with sandbox_status("✏️  Writing to sandbox..."):
+        with sandbox_status("✏️  Writing file..."):
             dest.write_text(content, encoding="utf-8")
-        return f"Successfully created file in sandbox: {filepath}"
+        return f"Wrote {filepath}."
     except Exception as e:
         return f"Error creating file {filepath}: {e}"
 
@@ -392,7 +349,7 @@ def web_search(query: str) -> str:
 
 
 def apply_sandbox_to_root(project_root: Path | None = None, verbose: bool = False) -> str:
-    """Apply workspace changes back to the real project root and destroy the sandbox.
+    """Save drafted changes back to the real project root and destroy the sandbox.
 
     Diffs the mutable workspace against the pristine baseline, then applies
     only those changes to the project root. If a project file changed since the
@@ -423,7 +380,7 @@ def apply_sandbox_to_root(project_root: Path | None = None, verbose: bool = Fals
             return set()
         return {item.relative_to(root) for item in root.rglob("*") if item.is_file()}
 
-    with sandbox_status("🔄 Syncing sandbox → project root..."):
+    with sandbox_status("💾 Saving changes..."):
         baseline_files = iter_files(sandbox.baseline)
         workspace_files = iter_files(sandbox.workspace)
 
@@ -478,11 +435,19 @@ def apply_sandbox_to_root(project_root: Path | None = None, verbose: bool = Fals
                 shutil.copy2(workspace_path, project_path)
                 copied_count += 1
 
-    cleanup_message = sandbox.destroy()
-    summary = f"Applied {copied_count} file(s), deleted {deleted_count} file(s). {cleanup_message}"
+    sandbox.destroy()
     if conflicts:
-        summary += f" Skipped {len(conflicts)} conflict(s): {', '.join(conflicts)}."
-    return summary
+        return (
+            f"Could not save because {len(conflicts)} file(s) changed outside Hamster: "
+            f"{', '.join(conflicts)}. No drafted changes were saved."
+        )
+    return f"Saved {copied_count} file(s), removed {deleted_count} file(s)."
+
+
+def discard_sandbox_changes() -> str:
+    """Discard drafted changes and destroy the active sandbox."""
+    cleanup_sandbox()
+    return "Discarded drafted changes."
 
 
 def cleanup_sandbox() -> str:
@@ -497,13 +462,13 @@ def cleanup_sandbox() -> str:
 
 
 def list_sandbox_files(pattern: str = "") -> str:
-    """List files in the sandbox for debugging.
+    """List files in the current draft for debugging.
 
     Args:
         pattern: Optional substring to filter files.
 
     Returns:
-        String listing of sandbox contents.
+        String listing of draft contents.
     """
     try:
         sandbox = _get_sandbox()
@@ -518,19 +483,19 @@ def list_sandbox_files(pattern: str = "") -> str:
                 if not pattern or pattern.lower() in str(rel_path).lower():
                     files.append(str(rel_path))
     except Exception as e:
-        return f"ERROR listing sandbox: {e}"
+        return f"ERROR listing draft files: {e}"
 
     if not files:
-        return "Sandbox workspace is empty."
+        return "Draft workspace is empty."
 
-    header = f"Sandbox workspace files ({len(files)} total):\n"
+    header = f"Draft workspace files ({len(files)} total):\n"
     listing = "\n".join(files[:50])
     suffix = f"\n... and {len(files) - 50} more" if len(files) > 50 else ""
     return header + listing + suffix
 
 
 def review_changes() -> str:
-    """Summarize pending sandbox changes for user review."""
+    """Summarize pending drafted changes for user review."""
     try:
         sandbox = _get_sandbox()
     except RuntimeError as exc:
@@ -539,17 +504,17 @@ def review_changes() -> str:
     pending = _pending_sandbox_changes(sandbox)
 
     if not pending:
-        return "No sandbox changes pending review."
+        return "No drafted changes pending review."
 
-    summary = [f"Pending sandbox changes ({len(pending)} files):"]
+    summary = [f"Pending drafted changes ({len(pending)} files):"]
     summary.extend(f"  - {line}" for line in pending)
-    summary.append("\nUse /apply to apply changes to the project root.")
+    summary.append("\nUse /apply to save changes.")
     return "\n".join(summary)
 
 
 def sync_workspace_to_sandbox(project_root: Path | None = None, verbose: bool = False) -> str:
     """No-op stub retained for API compatibility."""
-    return "Sandbox workspace is initialized at session start. No manual sync needed."
+    return "Draft workspace is initialized at task start. No manual sync needed."
 
 
 def _pending_sandbox_changes(sandbox: TempSandbox | None = None) -> list[str]:
@@ -580,6 +545,30 @@ def has_pending_sandbox_changes() -> bool:
         return False
 
 
+def pending_change_summary() -> list[str]:
+    return _pending_sandbox_changes()
+
+
+def pending_change_diff() -> list[str]:
+    sandbox = _get_sandbox()
+
+    def iter_files(root: Path) -> set[Path]:
+        return {item.relative_to(root) for item in root.rglob("*") if item.is_file()}
+
+    lines: list[str] = []
+    baseline_files = iter_files(sandbox.baseline)
+    workspace_files = iter_files(sandbox.workspace)
+    for rel in sorted(baseline_files | workspace_files):
+        baseline_path = sandbox.baseline / rel
+        workspace_path = sandbox.workspace / rel
+        before = baseline_path.read_text(encoding="utf-8", errors="replace") if rel in baseline_files else ""
+        after = workspace_path.read_text(encoding="utf-8", errors="replace") if rel in workspace_files else ""
+        if before == after:
+            continue
+        lines.extend(_make_patch_preview(str(rel), before, after))
+    return lines
+
+
 # ---------------------------------------------------------------------------
 # Tool schema definitions for OpenRouter
 # ---------------------------------------------------------------------------
@@ -590,8 +579,8 @@ TOOL_SCHEMAS = [
         "function": {
             "name": "search_codebase",
             "description": (
-                "Search the hidden sandbox workspace for string matches using ripgrep. "
-                "Use relative paths like 'hamster/agent.py', never 'sandbox/...'."
+                "Search project files for string matches using ripgrep. "
+                "Use relative paths like 'hamster/agent.py'."
             ),
             "parameters": {
                 "type": "object",
@@ -606,9 +595,8 @@ TOOL_SCHEMAS = [
         "function": {
             "name": "read_file",
             "description": (
-                "Read a file from the hidden sandbox workspace by its project-relative path "
-                "(e.g. 'hamster/agent.py', 'README.md'). "
-                "Never prefix paths with 'sandbox/'."
+                "Read a file by its project-relative path "
+                "(e.g. 'hamster/agent.py', 'README.md')."
             ),
             "parameters": {
                 "type": "object",
@@ -623,8 +611,8 @@ TOOL_SCHEMAS = [
         "function": {
             "name": "edit_file_patch",
             "description": (
-                "Replace one exact target text block in a project file. "
-                "The replacement is applied to the hidden sandbox workspace after approval. "
+                "Replace one exact target text block in a project file. Use this for small surgical edits only; "
+                "for broad rewrites, use write_file with the full updated file content. "
                 "Use relative paths like 'hamster/tools.py'."
             ),
             "parameters": {
@@ -644,8 +632,8 @@ TOOL_SCHEMAS = [
         "function": {
             "name": "write_file",
             "description": (
-                "Create or overwrite a file inside the hidden sandbox workspace, automatically "
-                "scaffolding missing parent directories. Does not write to the project root. "
+                "Create or overwrite a project file, automatically scaffolding missing parent directories. "
+                "Use this for new files and broad whole-file rewrites. "
                 "Use relative paths like 'hamster/new_file.py'."
             ),
             "parameters": {
@@ -655,22 +643,6 @@ TOOL_SCHEMAS = [
                     "content": {"type": "string"},
                 },
                 "required": ["filepath", "content"],
-                "additionalProperties": False,
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "apply_sandbox_to_root",
-            "description": (
-                "Apply verified hidden sandbox workspace changes back to the real project root, "
-                "then destroy the temporary sandbox."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {},
-                "required": [],
                 "additionalProperties": False,
             },
         },
@@ -693,8 +665,7 @@ TOOL_SCHEMAS = [
         "function": {
             "name": "run_sandbox_command",
             "description": (
-                "Run a non-destructive terminal command inside the OS temp sandbox after security "
-                "filtering and user approval. Use for exploratory commands on workspace files."
+                "Run a non-destructive terminal command after security filtering and user approval."
             ),
             "parameters": {
                 "type": "object",
@@ -713,5 +684,4 @@ TOOL_FUNCTIONS = {
     "write_file": write_file,
     "web_search": web_search,
     "run_sandbox_command": run_sandbox_command,
-    "apply_sandbox_to_root": apply_sandbox_to_root,
 }

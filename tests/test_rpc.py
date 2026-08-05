@@ -21,9 +21,8 @@ class TestRPCGateway(unittest.TestCase):
 
         # patch tools to avoid interactive prompts
         self.p1 = patch("hamster.tools.confirm", return_value=True)
-        self.p2 = patch("hamster.tools.render_diff")
-        self.p3 = patch("hamster.tools._project_root", return_value=str(self.test_project))
-        self.p1.start(); self.p2.start(); self.p3.start()
+        self.p2 = patch("hamster.tools._project_root", return_value=str(self.test_project))
+        self.p1.start(); self.p2.start()
 
         init_session_state()
         self.sandbox = TempSandbox(project_root=self.test_project)
@@ -33,7 +32,7 @@ class TestRPCGateway(unittest.TestCase):
         self.gateway = RPCGateway(self.sessions)
 
     def tearDown(self):
-        self.p1.stop(); self.p2.stop(); self.p3.stop()
+        self.p1.stop(); self.p2.stop()
         cleanup_sandbox()
 
     def test_session_and_exec(self):

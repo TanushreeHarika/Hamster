@@ -1,20 +1,20 @@
 # Hamster
 
-Hamster is a lightweight, efficient Command Line Interface (CLI) agent designed specifically for various software engineering tasks. Utilizing the OpenRouter framework, Hamster integrates permission-gated sandbox tools to create a secure and controlled environment for executing commands and manipulating files.
+Hamster is a lightweight, efficient Command Line Interface (CLI) agent designed specifically for software engineering tasks. Utilizing the OpenRouter framework, Hamster drafts changes safely and lets you accept or reject the whole result at the end of a task.
 
 ## Features
 
-- **Lightweight CLI**: Hamster is optimized for fast interactions and minimal resource consumption, making it suitable for developers who require efficiency in their workflow.
-  
-- **Secure Sandbox**: All command executions and file operations are confined to a dedicated environment, ensuring that sensitive data remains secure and unauthorized access is prevented.
+- **Lightweight CLI**: Optimized for fast interactions and minimal resource consumption, making it suitable for developers who require efficiency in their workflow.
 
-- **Interactive Command Guide**: Users have quick access to help and command overviews directly from the CLI interface, reducing the learning curve for new users.
+- **Drafted Changes**: Works on a draft first, allowing you to decide whether to save or discard the completed result, ensuring you always have control of your changes.
+
+- **Interactive Command Guide**: Provides quick access to help and command overviews directly from the CLI interface, reducing the learning curve for new users.
 
 ## Setup
 
 To install and set up Hamster, follow these comprehensive steps:
 
-1. **Create a Virtual Environment**: Itâs recommended to use Pythonâs built-in virtual environment support.
+1. **Create a Virtual Environment**: It's recommended to use Python's built-in virtual environment support.
    ```bash
    python -m venv venv
    ```
@@ -37,7 +37,7 @@ To install and set up Hamster, follow these comprehensive steps:
    ```
 
 ### Important Note:
-All tool file access is strictly contained to a hidden OS-managed sandbox workspace. Completed, approved changes are applied back to the project incrementally.
+Hamster prompts at the end of a task with changes: accept all to save the result, or reject all to discard it.
 
 ## Available Commands
 
@@ -45,7 +45,7 @@ Hamster provides an intuitive interface with several helpful commands. Here are 
 
 ```text
 /help             Display the interactive command guide, offering assistance and an overview of available commands.
-/search <query>   Utilize Hamster to search for relevant technical documentation or resources based on your query. Ideal for finding quick answers or code examples.
+/search <query>   Search for relevant technical documentation or resources based on your query, ideal for finding quick answers or code examples.
 /clear            Clear the terminal UI and refresh the display for a clean workspace.
 /exit             Exit the Hamster environment and return to your standard shell.
 ```
@@ -54,21 +54,19 @@ Hamster provides an intuitive interface with several helpful commands. Here are 
 
 Hamster features five key permission-gated tools that significantly enhance its functionality while adhering to security practices:
 
-- `search_codebase(query)`: Conducts searches exclusively within the hidden sandbox workspace, enabling users to locate files and references quickly.
-  
-- `read_file(filepath)`: Safely reads files located within the hidden sandbox workspace, ensuring secure content access and protection against unauthorized modification.
+- `search_codebase(query)`: Conducts searches across the current project draft, enabling users to locate files and references quickly.
 
-- `edit_file_patch(filepath, target_text, replacement_text)`: Facilitates surgical replacements in file text within the sandbox, providing previews of changes before final application for user approval.
+- `read_file(filepath)`: Safely reads project files by relative path.
 
-- `web_search(query)`: Performs an authorized search on DuckDuckGo, allowing access to technical documentation relevant to user queries, thereby assisting in troubleshooting and learning.
+- `edit_file_patch(filepath, target_text, replacement_text)`: Facilitates surgical replacements in file text.
 
-- `run_sandbox_command(command)`: Executes pre-approved commands within the sandbox, employing filtering mechanisms to guarantee safety and prevent system alterations.
+- `web_search(query)`: Performs an authorized search on DuckDuckGo, allowing access to technical documentation relevant to user queries, assisting in troubleshooting and learning.
+
+- `run_sandbox_command(command)`: Executes pre-approved commands with filtering mechanisms to prevent unsafe operations.
 
 ### Security Measures
-Hamster implements rigorous security protocols that validate all requests for sandbox path access. Attempts to escape the sandbox environment are strictly prohibited and generate a security violation response, safeguarding the integrity of the system.
+Hamster implements rigorous security protocols that validate all requested paths. Attempts to access files outside the allowed project scope are blocked with a security violation response, ensuring the integrity and safety of your development environment.
 
 ## Conclusion
 
-**Conclusion**
-
-Hamster transforms software engineering workflows by offering a secure, efficient Command Line Interface tailored to developer needs. By providing an array of versatile tools while enforcing stringent security measures, Hamster ensures that each operation is safe and controlled. Integrating Hamster into your development process can significantly enhance productivity, allowing you to focus on what truly matters: writing exceptional code and building quality applications.
+Hamster transforms software engineering workflows by offering a secure, efficient Command Line Interface tailored to developer needs. By providing an array of versatile tools while enforcing stringent security measures, Hamster ensures each operation is safe and controlled. Integrating Hamster into your development process can significantly enhance productivity, allowing you to focus on what truly matters: writing exceptional code and building quality applications.
