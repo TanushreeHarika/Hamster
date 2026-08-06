@@ -1,72 +1,148 @@
 # Hamster
 
-Hamster is a lightweight, efficient Command Line Interface (CLI) agent designed specifically for software engineering tasks. Utilizing the OpenRouter framework, Hamster drafts changes safely and lets you accept or reject the whole result at the end of a task.
+**Hamster** is a lightweight, high-performance Command Line Interface (CLI) software engineering agent. Utilizing the OpenRouter API framework, Hamster drafts changes in an isolated temporary sandbox, presenting rich terminal previews and allowing you to accept or discard all changes at the end of each task.
 
-## Features
+---
 
-- **Lightweight CLI**: Optimized for fast interactions and minimal resource consumption, making it suitable for developers who require efficiency in their workflow.
+## 🌟 Key Features
 
-- **Drafted Changes**: Works on a draft first, allowing you to decide whether to save or discard the completed result, ensuring you always have control of your changes.
+- **Isolated Draft Workspace**: All reads, writes, and command executions target a temporary sandbox (`/tmp/hamster-sandbox-<uuid>/`). The real project directory is touched only when you explicitly approve changes at task completion.
+- **Cross-Platform Compatibility**: Fully compatible with **macOS**, **Linux**, and **Windows** (CMD, PowerShell, Git Bash, WSL2).
+- **APFS Fast-Cloning**: On macOS, utilizes APFS copy-on-write (`cp -c`) for instant (<10ms) sandbox instantiation without physically duplicating file contents.
+- **Ephemeral Docker Sandbox Backend**: Command execution delegates to an ephemeral, network-isolated Docker container (`--network=none`, `--memory=256m`, `--cpus=1`) when Docker is present, falling back seamlessly to host process execution.
+- **Two-Stage Planning → Execution Engine**: Automatically detects structured planning responses from the model and injects an execution prompt before invoking tools.
+- **Persistent LSP Integration**: Integrates a persistent JSON-RPC 2.0 language server daemon (`pyright-langserver`) for real-time code diagnostics and definition resolution.
+- **Windowed File Reading & Fuzzy Patching**: Supports line-range slicing (`start_line`, `end_line`) for reading large files, and trailing-whitespace-tolerant fuzzy diff matching for edits.
+- **Token Budget Context Compactor**: Built-in context compaction using `tiktoken` BPE token estimation (`cl100k_base`) to maximize context retention without overflowing model limits.
+- **Strict Security Policy**: Path containment checks prevent sandbox escaping, combined with regex command filtering and strict binary allowlists (`git`, `python`, `pytest`, `npm`, etc.).
 
-- **Interactive Command Guide**: Provides quick access to help and command overviews directly from the CLI interface, reducing the learning curve for new users.
+---
 
-## Setup
+## 🛠️ Tooling Overview
 
-To install and set up Hamster, follow these comprehensive steps:
+Hamster exposes six permission-gated tools to the AI model:
 
-1. **Create a Virtual Environment**: It's recommended to use Python's built-in virtual environment support.
-   ```bash
-   python -m venv venv
-   ```
+| Tool | Description |
+| :--- | :--- |
+| `search_codebase(query)` | Conducts fast string searches across the sandbox workspace using `ripgrep` (`rg`). |
+| `read_file(filepath, start_line, end_line)` | Safely reads project files by relative path with optional line-range slicing. |
+| `edit_file_patch(filepath, target_text, replacement_text)` | Performs surgical replacements in file text (with exact and fuzzy whitespace-tolerant matching). |
+| `write_file(filepath, content)` | Creates or overwrites a draft file, automatically scaffolding parent directories. |
+| `web_search(query)` | Permission-gated DuckDuckGo search for technical documentation, APIs, and syntax lookup. |
+| `run_sandbox_command(command)` | Executes pre-filtered shell commands in an isolated container or sandboxed environment. |
 
-2. **Install Dependencies**: Change to the project directory and install the package in editable mode using pip:
-   ```bash
-   pip install -e .
-   ```
+---
 
-3. **Configuration**: Create a configuration file to set the necessary API credentials and operational parameters. Create or update a `.env` file in the project root directory with the following content:
-   ```bash
-   OPENROUTER_API_KEY=your_key_here   # Replace 'your_key_here' with your actual OpenRouter API key
-   MAX_TOKENS=4096                      # Maximum number of tokens for processing API requests
-   MAX_FAILURES=3                       # Specifies the number of allowed failures before the application halts
-   ```
+## 💻 Cross-Platform Prerequisites
 
-4. **Run Hamster**: To start the Hamster CLI and access its features, use the following command:
-   ```bash
-   hamster
-   ```
+Hamster requires **Python 3.11+** and **ripgrep (`rg`)** on system `PATH`.
 
-### Important Note:
-Hamster prompts at the end of a task with changes: accept all to save the result, or reject all to discard it.
-
-## Available Commands
-
-Hamster provides an intuitive interface with several helpful commands. Here are some available commands:
-
-```text
-/help             Display the interactive command guide, offering assistance and an overview of available commands.
-/search <query>   Search for relevant technical documentation or resources based on your query, ideal for finding quick answers or code examples.
-/clear            Clear the terminal UI and refresh the display for a clean workspace.
-/exit             Exit the Hamster environment and return to your standard shell.
+### macOS
+```bash
+brew install ripgrep
 ```
 
-### Tooling Overview
+### Linux (Ubuntu/Debian)
+```bash
+sudo apt update && sudo apt install ripgrep
+```
 
-Hamster features five key permission-gated tools that significantly enhance its functionality while adhering to security practices:
+### Windows
+```powershell
+winget install BurntSushi.ripgrep.MSVC
+# Or via Chocolatey: choco install ripgrep
+```
 
-- `search_codebase(query)`: Conducts searches across the current project draft, enabling users to locate files and references quickly.
+---
 
-- `read_file(filepath)`: Safely reads project files by relative path.
+## 🚀 Setup & Installation
 
-- `edit_file_patch(filepath, target_text, replacement_text)`: Facilitates surgical replacements in file text.
+### Option 1: Using `uv` (Recommended)
 
-- `web_search(query)`: Performs an authorized search on DuckDuckGo, allowing access to technical documentation relevant to user queries, assisting in troubleshooting and learning.
+1. **Clone & Navigate**:
+   ```bash
+   git clone https://github.com/your-repo/hamster.git
+   cd hamster
+   ```
 
-- `run_sandbox_command(command)`: Executes pre-approved commands with filtering mechanisms to prevent unsafe operations.
+2. **Create Virtual Environment & Install**:
+   ```bash
+   uv venv
+   # On macOS/Linux:
+   source .venv/bin/activate
+   # On Windows (PowerShell):
+   .venv\Scripts\activate
 
-### Security Measures
-Hamster implements rigorous security protocols that validate all requested paths. Attempts to access files outside the allowed project scope are blocked with a security violation response, ensuring the integrity and safety of your development environment.
+   uv pip install -e .
+   ```
 
-## Conclusion
+### Option 2: Using standard `pip`
 
-Hamster transforms software engineering workflows by offering a secure, efficient Command Line Interface tailored to developer needs. By providing an array of versatile tools while enforcing stringent security measures, Hamster ensures each operation is safe and controlled. Integrating Hamster into your development process can significantly enhance productivity, allowing you to focus on what truly matters: writing exceptional code and building quality applications.
+```bash
+python -m venv venv
+# On macOS/Linux:
+source venv/bin/activate
+# On Windows (PowerShell):
+venv\Scripts\activate
+
+pip install -e .
+```
+
+---
+
+## ⚙️ Configuration
+
+Create or update a `.env` file in the project root directory:
+
+```env
+OPENROUTER_API_KEY=your_openrouter_api_key_here
+OPENROUTER_MODEL=openai/gpt-4o-mini  # Optional model override
+MAX_TOKENS=4096
+MAX_FAILURES=3
+```
+
+---
+
+## 🎮 Usage & Available Commands
+
+Start the interactive CLI:
+```bash
+hamster
+```
+
+### Interactive CLI Commands
+
+| Command | Description |
+| :--- | :--- |
+| `/help` | Displays the interactive command guide and tooling overview. |
+| `/files` | Lists all files currently modified or staged in the draft workspace. |
+| `/pending` | Displays a summary of pending drafted changes. |
+| `/apply` | Manually applies drafted changes to the real project root. |
+| `/search <query>` | Triggers a DuckDuckGo documentation search. |
+| `/clear` | Clears the terminal screen and refreshes the Hamster splash art. |
+| `/exit` | Safely destroys the active sandbox workspace and exits. |
+
+---
+
+## 🛡️ Security Measures
+
+Hamster implements strict defense-in-depth security:
+- **Path Canonicalization**: Resolves relative paths against the active sandbox root using `os.path.realpath`, rejecting any breakout attempts (`../../.env`).
+- **Binary Allowlisting & Command Filtering**: Blocks dangerous commands (`sudo`, `rm`, `chmod`, `chown`, curl-to-shell pipes) while validating commands against an allowed binary matrix.
+- **3-Way Conflict Detection**: Prevents overwriting external host edits when applying drafted changes.
+
+---
+
+## 🧪 Running Tests
+
+Hamster includes a full unit test suite covering sandbox lifecycle, isolation, fuzzy patching, and policy analysis:
+
+```bash
+uv run python -m unittest discover tests
+```
+
+---
+
+## 📄 License
+
+MIT License. See [LICENSE](LICENSE) for details.
