@@ -31,8 +31,22 @@ class RuntimeOrchestrator:
         raise NotImplementedError("launch_native is not implemented yet")
 
     def launch_container(self, image: str, command: str, *, timeout: int | None = None) -> ExecutionResult:
-        """Launch inside a container or microVM (gVisor/Firecracker).
+        """Launch *command* inside an ephemeral Docker container.
 
-        Stub for future microVM/container driver integration.
+        Delegates to :func:`src.container.execute_sandboxed` which uses
+        ``docker run --rm`` with ``--network=none`` and resource caps.
+        Falls back to host execution transparently when Docker is unavailable.
         """
-        raise NotImplementedError("launch_container is not implemented yet")
+        try:
+            from src.container import DockerSandboxBackend
+        except ImportError:
+            raise RuntimeError("src.container module not found")
+
+        backend = DockerSandboxBackend(image=image)
+        result = backend.execute_command(command, cwd=None)
+        return ExecutionResult(
+            exit_code=result.returncode,
+            stdout=result.stdout,
+            stderr=result.stderr,
+            meta={"image": image, "docker_available": backend.is_available()},
+        )

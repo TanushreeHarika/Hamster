@@ -78,6 +78,20 @@ class CommandASTAnalyzer:
     # Heuristic for high-entropy tokens (possible secrets or encoded payloads)
     LONG_BASE64_RE = re.compile(r"[A-Za-z0-9+/=]{40,}")
 
+    # Strict allowlist of binaries that are considered safe for agent use.
+    # Commands whose primary binary is NOT in this set will be flagged in
+    # the analysis output as an advisory note (but not blocked outright;
+    # blocking is still done via VIOLATION_PATTERNS and the regex blacklist
+    # in tools.py).
+    ALLOWED_BINARIES: frozenset[str] = frozenset({
+        "git", "python", "python3", "pytest", "uv", "pip", "pip3",
+        "npm", "npx", "node", "yarn",
+        "rg", "grep", "find", "ls", "cat", "head", "tail", "wc",
+        "echo", "printf", "pwd", "env", "which", "type",
+        "mkdir", "touch", "diff", "sort", "uniq", "cut",
+        "true", "false", "test",
+    })
+
     @staticmethod
     def _shannon_entropy(s: str) -> float:
         if not s:
@@ -91,6 +105,21 @@ class CommandASTAnalyzer:
             p = v / length
             entropy -= p * math.log2(p)
         return entropy
+
+    @classmethod
+    def is_whitelisted_binary(cls, command: str) -> bool:
+        """Return ``True`` if the primary binary of *command* is in ``ALLOWED_BINARIES``.
+
+        This implements the whitelist policy check used as an advisory layer on
+        top of the regex blacklist. Callers can use this to gate stricter
+        ``STRICT_WHITELIST_MODE`` enforcement in the future without changing
+        the existing public API.
+        """
+        try:
+            parts = shlex.split(command or "")
+        except ValueError:
+            return False
+        return bool(parts) and parts[0] in cls.ALLOWED_BINARIES
 
     @classmethod
     def analyze(cls, command: str) -> Dict[str, Any]:
@@ -126,4 +155,7 @@ class CommandASTAnalyzer:
             primary = parts[0] if parts else ""
         except Exception:
             primary = ""
+        # Advisory whitelist note — does not affect the "safe" flag
+        if primary and primary not in cls.ALLOWED_BINARIES:
+            findings["notes"].append(f"binary_not_whitelisted={primary!r}")
         return {**findings, "safe": bool(safe), "primary": primary}

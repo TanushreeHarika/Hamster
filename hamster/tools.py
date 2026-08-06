@@ -9,6 +9,7 @@ import subprocess
 from pathlib import Path
 
 from src.sandbox import TempSandbox
+from src.container import execute_sandboxed
 from src.security import assert_sandbox_path, PathSecurityViolation
 from hamster.ui import (
     confirm,
@@ -182,6 +183,47 @@ def validate_terminal_command(command: str) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Fuzzy patching helper
+# ---------------------------------------------------------------------------
+
+def _try_fuzzy_replace(original: str, target_text: str, replacement_text: str) -> str | None:
+    """Attempt a whitespace-tolerant text replacement in *original*.
+
+    Strips trailing whitespace per line before comparing so the model can
+    match code blocks even when the editor has saved with different trailing
+    spaces or line-endings.  Leading whitespace is preserved for indentation
+    accuracy.
+
+    Returns the updated string on success, or ``None`` if no fuzzy match is
+    found (caller should then return the regular 'not found' error).
+    """
+    # Normalise line endings first
+    original_n = original.replace("\r\n", "\n").replace("\r", "\n")
+    target_n = target_text.replace("\r\n", "\n").replace("\r", "\n")
+
+    orig_lines = original_n.splitlines(keepends=True)
+    tgt_stripped = [line.rstrip() for line in target_n.splitlines()]
+    tgt_len = len(tgt_stripped)
+
+    # Nothing to match against
+    if not tgt_stripped or all(s == "" for s in tgt_stripped):
+        return None
+
+    for i in range(len(orig_lines) - tgt_len + 1):
+        window = [line.rstrip("\r\n").rstrip() for line in orig_lines[i : i + tgt_len]]
+        if window == tgt_stripped:
+            before = "".join(orig_lines[:i])
+            after = "".join(orig_lines[i + tgt_len :])
+            rep = replacement_text
+            # Ensure the replacement ends with a newline when there is more content
+            if after and not rep.endswith("\n"):
+                rep += "\n"
+            return before + rep + after
+
+    return None
+
+
+# ---------------------------------------------------------------------------
 # Public tool functions
 # ---------------------------------------------------------------------------
 
@@ -196,13 +238,7 @@ def run_sandbox_command(command: str) -> str:
 
     sandbox = _get_sandbox()
     with sandbox_status("🖥️  Running command..."):
-        result = subprocess.run(
-            shlex.split(command),
-            cwd=str(sandbox.workspace),
-            text=True,
-            capture_output=True,
-            check=False,
-        )
+        result = execute_sandboxed(command, cwd=str(sandbox.workspace))
     return (result.stdout + result.stderr).strip() or f"Command exited with {result.returncode}."
 
 
@@ -246,8 +282,19 @@ def search_codebase(query: str) -> str:
     raise RuntimeError(result.stderr.strip() or "rg failed without stderr.")
 
 
-def read_file(filepath: str) -> str:
-    """Read *filepath* from the draft workspace."""
+def read_file(filepath: str, start_line: int | None = None, end_line: int | None = None) -> str:
+    """Read *filepath* from the draft workspace.
+
+    Args:
+        filepath: Project-relative file path (e.g. ``'hamster/agent.py'``).
+        start_line: First line to return, 1-indexed inclusive.  ``None`` means
+            start from line 1 (reads the whole file from the top).
+        end_line: Last line to return, 1-indexed inclusive.  ``None`` means
+            read to the end of the file.
+
+    Returns:
+        File contents (or a selected line slice prefixed with a range header).
+    """
     # Security: validate path won't escape the draft workspace.
     sandbox = _get_sandbox()
     root_str = str(sandbox.workspace)
@@ -265,7 +312,25 @@ def read_file(filepath: str) -> str:
     try:
         with sandbox_status("📄 Reading file..."):
             staged = _stage_file_to_sandbox(filepath)
-            return Path(staged).read_text(encoding="utf-8")
+            content = Path(staged).read_text(encoding="utf-8")
+
+        # Return full content when no line range is requested
+        if start_line is None and end_line is None:
+            return content
+
+        lines = content.splitlines(keepends=True)
+        total = len(lines)
+
+        # Convert to 0-based slice indices
+        s = max(0, (start_line or 1) - 1)
+        e = min(total, end_line or total)
+
+        if s >= total:
+            return f"start_line {start_line} exceeds file length ({total} lines)."
+
+        header = f"[Lines {s + 1}–{e} of {total}]\n"
+        return header + "".join(lines[s:e])
+
     except FileNotFoundError as exc:
         return f"File not found: {exc}"
 
@@ -292,25 +357,26 @@ def edit_file_patch(filepath: str, target_text: str, replacement_text: str) -> s
         return f"File not found: {filepath}"
 
     original = Path(staged).read_text(encoding="utf-8")
-    if target_text not in original:
-        return (
-            f"Target text was not found in {filepath}. "
-            "For broad rewrites, read the current file and use write_file with the full updated content."
-        )
 
-    replaced_count = original.count(target_text)
-    if replaced_count == 0:
-        return (
-            f"Target text was not found in {filepath}. "
-            "For broad rewrites, read the current file and use write_file with the full updated content."
-        )
+    # --- Exact match (primary path, preserves all existing behaviour) --------
+    if target_text in original:
+        replaced_count = original.count(target_text)
+        updated = original.replace(target_text, replacement_text)
+        with sandbox_status("✏️  Updating file..."):
+            Path(staged).write_text(updated, encoding="utf-8")
+        return f"Updated {filepath}: replaced {replaced_count} occurrence{'s' if replaced_count != 1 else ''}."
 
-    updated = original.replace(target_text, replacement_text)
+    # --- Fuzzy match (trailing-whitespace-tolerant fallback) ------------------
+    fuzzy_result = _try_fuzzy_replace(original, target_text, replacement_text)
+    if fuzzy_result is not None:
+        with sandbox_status("✏️  Updating file (fuzzy match)..."):
+            Path(staged).write_text(fuzzy_result, encoding="utf-8")
+        return f"Updated {filepath}: 1 occurrence replaced (whitespace-normalised match)."
 
-    with sandbox_status("✏️  Updating file..."):
-        Path(staged).write_text(updated, encoding="utf-8")
-
-    return f"Updated {filepath}: replaced {replaced_count} occurrence{'s' if replaced_count != 1 else ''}."
+    return (
+        f"Target text was not found in {filepath}. "
+        "For broad rewrites, read the current file and use write_file with the full updated content."
+    )
 
 
 def write_file(filepath: str, content: str) -> str:
@@ -596,11 +662,24 @@ TOOL_SCHEMAS = [
             "name": "read_file",
             "description": (
                 "Read a file by its project-relative path "
-                "(e.g. 'hamster/agent.py', 'README.md')."
+                "(e.g. 'hamster/agent.py', 'README.md'). "
+                "Use start_line and end_line (1-indexed, inclusive) to read only "
+                "a specific line range and avoid exhausting the context window on "
+                "large files. Omit both to read the entire file."
             ),
             "parameters": {
                 "type": "object",
-                "properties": {"filepath": {"type": "string"}},
+                "properties": {
+                    "filepath": {"type": "string"},
+                    "start_line": {
+                        "type": "integer",
+                        "description": "First line to return (1-indexed, inclusive). Omit to start from line 1.",
+                    },
+                    "end_line": {
+                        "type": "integer",
+                        "description": "Last line to return (1-indexed, inclusive). Omit to read to end of file.",
+                    },
+                },
                 "required": ["filepath"],
                 "additionalProperties": False,
             },

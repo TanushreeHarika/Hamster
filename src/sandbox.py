@@ -15,7 +15,10 @@ Layout::
 from __future__ import annotations
 
 import atexit
+import os
+import platform
 import shutil
+import subprocess
 import tempfile
 import uuid
 from pathlib import Path
@@ -94,26 +97,87 @@ class TempSandbox:
     # Copy helpers
     # ------------------------------------------------------------------
 
-    @staticmethod
-    def _ignore_project_entries(_directory: str, names: list[str]) -> set[str]:
-        ignored = {
-            ".git",
-            ".hg",
-            ".svn",
-            ".venv",
-            "venv",
-            "__pycache__",
-            ".pytest_cache",
-            ".mypy_cache",
-            ".ruff_cache",
-            "node_modules",
-            "dist",
-            "build",
-            "sandbox",
-        }
-        return {name for name in names if name in ignored}
+    # Entries ignored when copying the project into the sandbox.
+    _IGNORED_ENTRIES: frozenset[str] = frozenset({
+        ".git",
+        ".hg",
+        ".svn",
+        ".venv",
+        "venv",
+        "__pycache__",
+        ".pytest_cache",
+        ".mypy_cache",
+        ".ruff_cache",
+        "node_modules",
+        "dist",
+        "build",
+        "sandbox",
+    })
+
+    @classmethod
+    def _ignore_project_entries(cls, _directory: str, names: list[str]) -> set[str]:
+        """shutil.copytree ignore callback — returns top-level names to skip."""
+        return {name for name in names if name in cls._IGNORED_ENTRIES}
+
+    @classmethod
+    def _should_ignore_path(cls, rel: Path) -> bool:
+        """Return True if the top-level directory of *rel* is in the ignore set."""
+        return bool(rel.parts) and rel.parts[0] in cls._IGNORED_ENTRIES
+
+    @classmethod
+    def _try_apfs_clone(cls, source: Path, dest: Path) -> bool:
+        """Attempt an APFS copy-on-write reflink clone on macOS.
+
+        Uses ``cp -c`` which requests a copy-on-write clone when both paths are
+        on the same APFS volume, making sandbox instantiation near-instantaneous
+        without physically copying file data.
+
+        Ignored entries (e.g. ``.git``, ``.venv``) are excluded manually so the
+        result matches the ``shutil.copytree`` ignore behaviour.
+
+        Returns:
+            True if the clone completed successfully, False on any error
+            (signals the caller to fall back to ``shutil.copytree``).
+        """
+        if platform.system() != "Darwin":
+            return False
+
+        try:
+            dest.mkdir(parents=True, exist_ok=True)
+            for item in sorted(source.rglob("*")):
+                rel = item.relative_to(source)
+                if cls._should_ignore_path(rel):
+                    continue
+                target = dest / rel
+                if item.is_symlink():
+                    link_target = os.readlink(item)
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    if target.exists() or target.is_symlink():
+                        target.unlink()
+                    os.symlink(link_target, target)
+                elif item.is_dir():
+                    target.mkdir(parents=True, exist_ok=True)
+                elif item.is_file():
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    result = subprocess.run(
+                        ["cp", "-c", str(item), str(target)],
+                        capture_output=True,
+                        check=False,
+                    )
+                    if result.returncode != 0:
+                        # cp -c unsupported on this volume — use regular copy
+                        shutil.copy2(item, target)
+            return True
+        except Exception:
+            # Any error: clean up partial clone and signal caller to use copytree
+            if dest.exists():
+                shutil.rmtree(dest, ignore_errors=True)
+            return False
 
     def _copy_project(self, source: Path, dest: Path) -> None:
+        """Copy *source* → *dest*, preferring APFS CoW clone on macOS."""
+        if self._try_apfs_clone(source, dest):
+            return
         shutil.copytree(
             source,
             dest,

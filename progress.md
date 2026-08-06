@@ -59,7 +59,44 @@
 - Hardened the sandbox patch path by taking a pre-write snapshot and restoring the original content if a write or verification step fails.
 - Exposed the new utilities through the top-level `src` package while keeping the existing Hamster tool surface stable.
 
+## Version 0.3: Production Hardening & Intelligence Upgrades — Completed
+
+- Added `src/container.py` — `DockerSandboxBackend` that executes terminal commands inside
+  an ephemeral Docker container (`--network=none`, `--memory=256m`, `--cpus=1`) for process-level
+  isolation. Falls back transparently to host subprocess when Docker is unavailable, preserving all
+  existing behaviour.
+- Wired `run_sandbox_command` in `hamster/tools.py` to use `execute_sandboxed` from the new backend
+  instead of raw `subprocess.run`.
+- Implemented `launch_container` in `hamster/runtime.py` using `DockerSandboxBackend` (was a stub).
+- Added APFS copy-on-write fast-clone path in `src/sandbox.py` via `_try_apfs_clone`: on macOS,
+  `cp -c` is used to clone sandbox directories near-instantly without copying file data. Falls back
+  to `shutil.copytree` on any failure or non-macOS OS.
+- Refactored `TempSandbox._IGNORED_ENTRIES` into a `frozenset` class variable so the ignore list is
+  shared between `shutil.copytree` and the APFS clone path.
+- Added `_try_fuzzy_replace` helper to `hamster/tools.py` — a trailing-whitespace-tolerant patch
+  fallback. `edit_file_patch` now first tries an exact `str.replace`, then falls back to the fuzzy
+  matcher, so the model can match code blocks even when trailing spaces differ.
+- Extended `read_file` with optional `start_line` / `end_line` parameters (1-indexed, inclusive)
+  for windowed reading of large files. Updated the OpenRouter tool schema accordingly.
+- Added `src/lsp.py` `LSPDaemon` — a persistent JSON-RPC 2.0 LSP client that keeps a
+  `pyright-langserver --stdio` process alive between calls via a background reader thread. `LSPBridge`
+  now tries the daemon first and falls through to the original subprocess-per-call approach when
+  the daemon is unavailable.
+- Upgraded `src/context.py` token estimator to use `tiktoken` (`cl100k_base` BPE encoding) when
+  the optional package is installed. Gracefully falls back to the existing regex tokenizer.
+- Added `ALLOWED_BINARIES` frozenset and `is_whitelisted_binary` classmethod to
+  `hamster/policy.py` `CommandASTAnalyzer`. The `analyze` method now appends an advisory
+  `binary_not_whitelisted` note for unlisted binaries.
+- Added two-stage Planning → Execution workflow to `hamster/agent.py`. When the model's first
+  response (no tool calls) contains plan markers (numbered steps, `## Plan`, etc.), the plan is
+  shown to the user and an execution prompt is injected into the message history, triggering a
+  second model call to act on it. Guarded by `_execution_started` flag to prevent loops.
+- Added `tests/test_improvements.py` with 37 new tests; **total test count raised from 26 → 63,
+  all passing**.
+
 ## Left To Do
 
 - Add richer transcript persistence and resumable sessions.
 - Add package distribution docs for user-level installation with `uv tool install`.
+- Add `tiktoken` as an optional extras dependency in `pyproject.toml` for users who want exact BPE counts.
+- Implement `launch_native` in `hamster/runtime.py` with Linux namespace/cgroup/seccomp setup.

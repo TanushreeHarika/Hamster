@@ -18,6 +18,28 @@ def estimate_tokens(text: str) -> int:
     return max(1, len(tokens))
 
 
+# ---------------------------------------------------------------------------
+# Tokenizer upgrade: use tiktoken BPE when available
+# ---------------------------------------------------------------------------
+# tiktoken (https://github.com/openai/tiktoken) is an optional dependency.
+# When installed it gives an accurate BPE token count (cl100k_base encoding,
+# which is used by GPT-4 / Claude-equivalent vocab). When absent, the regex
+# tokenizer above is used as a lightweight fallback — no crash, no error.
+try:
+    import tiktoken as _tiktoken
+
+    _cl100k = _tiktoken.get_encoding("cl100k_base")
+
+    def estimate_tokens(text: str) -> int:  # type: ignore[misc]  # noqa: F811
+        """Estimate tokens using cl100k_base BPE encoding (tiktoken)."""
+        if not text:
+            return 1
+        return max(1, len(_cl100k.encode(text)))
+
+except ImportError:
+    pass  # estimate_tokens already defined above using the regex fallback
+
+
 class CompactContextManager:
     """Keeps the most important prompts and recent outcomes within a strict token budget."""
 

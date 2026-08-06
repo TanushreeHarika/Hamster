@@ -15,6 +15,43 @@ except Exception:  # pragma: no cover - optional utility import
 
 VERBOSE_CODE_MARKERS = ("```", "<!DOCTYPE html", "<html", "diff --git", "--- ", "+++ ")
 
+# ---------------------------------------------------------------------------
+# Two-stage planning detection
+# ---------------------------------------------------------------------------
+
+_PLAN_MARKERS: tuple[str, ...] = (
+    "## plan",
+    "### plan",
+    "## steps",
+    "### steps",
+    "## approach",
+    "## strategy",
+    "step 1",
+    "step 2",
+    "here's my plan",
+    "here is my plan",
+    "my plan:",
+    "my approach:",
+    "i'll approach",
+    "i will approach",
+    "let me plan",
+    "here's how i'll",
+    "here is how i'll",
+)
+
+
+def _looks_like_plan(content: str) -> bool:
+    """Return True if *content* looks like a structured execution plan.
+
+    Uses conservative heuristics so short acknowledgement responses
+    (e.g. "Sure, I'll start by...") do not falsely trigger the
+    execution-phase injection.
+    """
+    if not content or len(content.splitlines()) < 4:
+        return False
+    lowered = content.lower()
+    return any(marker in lowered for marker in _PLAN_MARKERS)
+
 
 SYSTEM_PROMPT = """You are Hamster, a production-grade CLI software engineering agent with a distinct character.
 
@@ -81,6 +118,10 @@ def should_suppress_assistant_content(content: str) -> bool:
 
 def run_agent_turn(client: OpenRouterClient, messages: list[dict[str, Any]], max_failures: int) -> None:
     failures = 0
+    # Tracks whether any tool calls have been made in this turn.  Used by the
+    # two-stage planning feature to prevent injecting the execution prompt more
+    # than once and to avoid re-triggering after execution has already started.
+    _execution_started = False
     if compact_context is not None:
         messages = compact_context(messages, token_budget=4000)
 
@@ -128,10 +169,36 @@ def run_agent_turn(client: OpenRouterClient, messages: list[dict[str, Any]], max
         tool_calls = assistant_message.get("tool_calls") or []
         if not tool_calls:
             content = "".join(buffered_content)
+
+            # ------------------------------------------------------------------
+            # Two-stage planning: if the model responded with a plan but no
+            # tool calls, show the plan to the user and inject an execution
+            # prompt so the model proceeds to act on it in the next iteration.
+            # This only fires once per run_agent_turn call (guarded by
+            # _execution_started) and only when the response is long enough to
+            # plausibly be a plan.
+            # ------------------------------------------------------------------
+            if not _execution_started and _looks_like_plan(content):
+                _execution_started = True
+                if content and not should_suppress_assistant_content(content):
+                    print_assistant_delta(content)
+                    print()
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": "Good plan. Now please execute it step-by-step using your available tools.",
+                    }
+                )
+                continue  # Re-enter the loop for the execution phase
+
             if content and not should_suppress_assistant_content(content):
                 print_assistant_delta(content)
                 print()
             return
+
+        # Tool calls were made — mark execution as started to prevent
+        # spurious plan re-injection on subsequent no-tool iterations.
+        _execution_started = True
 
         for tool_call in tool_calls:
             tool_result = execute_tool_call(tool_call)
