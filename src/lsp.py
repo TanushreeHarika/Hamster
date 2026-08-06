@@ -432,34 +432,62 @@ class LSPBridge:
         return diagnostics
 
     def definition_lookup(self, filepath: str, symbol: str) -> dict[str, Any]:
-        if not self.available():
-            return {
-                "status": "unavailable",
-                "server": self.server_name,
-                "symbol": symbol,
-                "message": "No local language server detected on PATH.",
-            }
+        """Look up the definition of *symbol* in *filepath*.
 
+        Resolution order:
+
+        1. **AST index** (:mod:`src.ast_index`) using Tree-sitter (when
+           installed) or the built-in regex scanner.  Returns definition line,
+           column, kind (function / class / assignment), and docstring.
+        2. **Original regex scan** of the file — simple ``def``/``class``
+           keyword search as a final fallback.
+        3. **Unavailable** response when no match is found anywhere.
+        """
+        # --- 1. AST index (Tree-sitter or regex backend) -----------------
+        try:
+            from src.ast_index import ASTIndex   # type: ignore[import]
+            index = ASTIndex.from_file(filepath)
+            defs = index.definitions(symbol)
+            if defs:
+                return {
+                    "status": "resolved",
+                    "server": f"ast_index/{index.backend}",
+                    "symbol": symbol,
+                    "matches": [
+                        {
+                            "line": d.line,
+                            "column": d.column,
+                            "kind": d.kind,
+                            "docstring": (d.docstring[:200] + "…") if len(d.docstring) > 200 else d.docstring,
+                        }
+                        for d in defs
+                    ],
+                }
+        except Exception:
+            pass
+
+        # --- 2. Keyword-scan fallback (original behaviour) ---------------
         target = Path(filepath).resolve()
         text = target.read_text(encoding="utf-8") if target.exists() else ""
-        matches: list[dict[str, int]] = []
+        matches: list[dict[str, Any]] = []
         for line_number, line in enumerate(text.splitlines(), start=1):
             if f"def {symbol}" in line or f"class {symbol}" in line:
-                matches.append({"line": line_number, "column": line.find(symbol) + 1})
+                matches.append({"line": line_number, "column": line.find(symbol) + 1, "kind": "unknown"})
 
         if matches:
             return {
                 "status": "resolved",
-                "server": self.server_name,
+                "server": "keyword_scan",
                 "symbol": symbol,
                 "matches": matches,
             }
 
+        # --- 3. Not found -------------------------------------------------
         return {
             "status": "unresolved",
             "server": self.server_name,
             "symbol": symbol,
-            "message": f"No local definition match found for {symbol!r} in {filepath}.",
+            "message": f"No definition found for {symbol!r} in {filepath!r}.",
         }
 
     @staticmethod
