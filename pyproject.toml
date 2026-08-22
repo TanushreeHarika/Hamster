@@ -10,6 +10,10 @@ dependencies = [
     "requests>=2.32.0",
 ]
 
+[project.optional-dependencies]
+# Install OS-native keychain support:  uv pip install -e ".[auth]"
+auth = ["keyring>=25.0"]
+
 [project.scripts]
 hamster = "hamster.cli:main"
 

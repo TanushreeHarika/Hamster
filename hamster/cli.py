@@ -4,8 +4,10 @@ import sys
 from pathlib import Path
 
 from hamster.agent import initial_messages, run_agent_turn
+from hamster.checkpoint import CheckpointStore
 from hamster.config import load_config
 from hamster.openrouter import OpenRouterClient
+from hamster.session_store import SessionStore
 from hamster.tools import (
     cleanup_sandbox,
     configure_sandbox,
@@ -20,8 +22,21 @@ from hamster.tools import (
     apply_sandbox_to_root,
     get_session_state,
     sync_workspace_to_sandbox,
+    undo_workspace,
 )
-from hamster.ui import clear_screen, print_exit_logo, print_help, print_logo, prompt_user, request_save_changes
+from hamster.ui import (
+    clear_screen,
+    print_exit_logo,
+    print_help,
+    print_login_success,
+    print_logo,
+    print_session_resumed,
+    print_sessions_table,
+    print_undo_result,
+    print_whoami,
+    prompt_user,
+    request_save_changes,
+)
 from hamster.rpc import SessionManager, RPCGateway
 from src.sandbox import TempSandbox
 from src.transactions import snapshot_files, rollback_snapshot, FileSnapshot
@@ -36,7 +51,13 @@ def _ensure_foundation(project_root: Path) -> None:
         )
 
 
-def main() -> None:
+def main(resume_messages: list | None = None, resume_session_id: str | None = None) -> None:
+    """Run the interactive Hamster session.
+
+    Args:
+        resume_messages:   Pre-populated message list when resuming a saved session.
+        resume_session_id: Existing session_id to continue persisting into.
+    """
     project_root = Path.cwd()
     _ensure_foundation(project_root)
 
@@ -52,6 +73,17 @@ def main() -> None:
     interactive_session_id = rpc_gateway.open_session("interactive")
     print_logo()
 
+    # --- Session persistence setup ---
+    store = SessionStore()
+    ckpt_store = CheckpointStore()
+    if resume_session_id:
+        persist_session_id = resume_session_id
+        # Resume the turn counter from how many checkpoints already exist
+        turn_index = len(store.list_checkpoints_for_session(resume_session_id))
+    else:
+        persist_session_id = store.create_session(working_dir=str(project_root))
+        turn_index = 0
+
     try:
         config = load_config(project_root)
     except ValueError as exc:
@@ -59,7 +91,8 @@ def main() -> None:
         sys.exit(1)
 
     client = OpenRouterClient(config)
-    messages = initial_messages()
+    # Use pre-populated messages when resuming, otherwise start fresh
+    messages = resume_messages if resume_messages is not None else initial_messages()
 
     print("Type /help for commands. Changes are reviewed once at the end of each task.\n")
     while True:
@@ -135,8 +168,100 @@ def main() -> None:
             print(res)
             continue
 
+        if user_input == "/login":
+            from hamster.auth.oauth  import AuthFlow
+            from hamster.auth.store  import SecureTokenStore
+            from hamster.auth.user   import get_profile
+            import os
+
+            client_id     = os.environ.get("GOOGLE_CLIENT_ID",     "").strip()
+            client_secret = os.environ.get("GOOGLE_CLIENT_SECRET", "").strip()
+
+            env_path = Path.cwd() / ".env"
+            if env_path.exists() and (not client_id or not client_secret):
+                for line in env_path.read_text(encoding="utf-8").splitlines():
+                    line = line.strip()
+                    if line.startswith("#") or "=" not in line:
+                        continue
+                    key, _, val = line.partition("=")
+                    key, val = key.strip(), val.strip()
+                    if key == "GOOGLE_CLIENT_ID"     and not client_id:
+                        client_id = val
+                    elif key == "GOOGLE_CLIENT_SECRET" and not client_secret:
+                        client_secret = val
+
+            try:
+                flow = AuthFlow(client_id=client_id, client_secret=client_secret)
+                token_data = flow.run()
+                profile    = get_profile(token_data)
+                payload = {
+                    **token_data,
+                    "email":   profile.email,
+                    "name":    profile.name,
+                    "picture": profile.picture,
+                    "sub":     profile.sub,
+                }
+                SecureTokenStore().save(payload)
+                print_login_success(profile.email)
+            except Exception as exc:
+                print(f"\n❌  Login failed: {exc}")
+            continue
+
+        if user_input == "/logout":
+            from hamster.auth.store import SecureTokenStore
+            from rich.console import Console
+            SecureTokenStore().delete()
+            Console().print("[bold gold3]🐹  Logged out.[/] Credentials cleared from all storage backends.")
+            continue
+
+        if user_input == "/whoami":
+            from hamster.auth.store import SecureTokenStore
+            from rich.console import Console
+            payload = SecureTokenStore().load()
+            if not payload or not payload.get("email"):
+                Console().print("[yellow]⚠️  Not logged in.[/] Run [bold cyan]/login[/] first.")
+            else:
+                print_whoami(payload)
+            continue
+
+        if user_input.startswith("/undo"):
+            parts = user_input.split(maxsplit=1)
+            steps = 1
+            if len(parts) == 2:
+                try:
+                    steps = int(parts[1].strip())
+                except ValueError:
+                    print("Usage: /undo [N]  (N must be a positive integer)")
+                    continue
+            success, msg = undo_workspace(steps, persist_session_id, store)
+            print_undo_result(msg, success=success)
+            if success:
+                # Sync the restored draft workspace back to the real project root
+                # so that files added/modified/deleted since that turn are reverted on disk.
+                apply_sandbox_to_root(project_root=project_root)
+                sandbox = start_sandbox()
+            continue
+
+        # --- Take a workspace checkpoint before every agent turn ---
+        ckpt_id = ckpt_store.create_checkpoint(
+            sandbox.workspace,
+            session_id=persist_session_id,
+            turn_index=turn_index,
+        )
+        store.save_checkpoint(persist_session_id, ckpt_id, turn_index)
+        turn_index += 1
+
         messages.append({"role": "user", "content": user_input})
         run_agent_turn(client, messages, config.max_failures)
+
+        # --- Persist the full updated message history after every turn ---
+        store.save_messages(persist_session_id, messages)
+        store.update_meta(
+            persist_session_id,
+            last_prompt=user_input[:200],
+            token_usage=len(messages),  # rough proxy; replace with real token count if available
+        )
+
         if has_pending_sandbox_changes():
             decision = request_save_changes(pending_change_summary(), pending_change_diff())
             if decision == "accept":
@@ -178,10 +303,46 @@ if __name__ == "__main__":
     p_consent_deny = consent_sub.add_parser("deny", help="Deny a consent request by id")
     p_consent_deny.add_argument("id", help="Consent request id")
 
+    # --- Session persistence sub-commands ---
+    sub.add_parser("list-sessions", help="List all saved Hamster sessions")
+
+    p_resume = sub.add_parser("resume", help="Resume a saved Hamster session")
+    p_resume.add_argument("session_id", help="Session ID to resume (from list-sessions)")
+
+    # --- Auth sub-commands ---
+    sub.add_parser("login",  help="Log in with Google (OAuth 2.0 PKCE flow)")
+    sub.add_parser("logout", help="Clear saved Google credentials")
+    sub.add_parser("whoami", help="Show the currently logged-in user")
+
     args = parser.parse_args()
 
     if args.cmd in (None, "start"):
         main()
+        sys.exit(0)
+
+    if args.cmd == "list-sessions":
+        store = SessionStore()
+        sessions = store.list_sessions()
+        print_sessions_table(sessions)
+        sys.exit(0)
+
+    if args.cmd == "resume":
+        store = SessionStore()
+        session_id = args.session_id.strip()
+        row = store.get_session(session_id)
+        if row is None:
+            print(f"Session '{session_id}' not found. Run 'hamster list-sessions' to see available sessions.")
+            sys.exit(1)
+        saved_messages = store.load_messages(session_id)
+        if not saved_messages:
+            # No messages persisted yet — start fresh but keep the session_id
+            saved_messages = initial_messages()
+        print_session_resumed(
+            session_id=session_id,
+            msg_count=len(saved_messages),
+            working_dir=row.get("working_dir", ""),
+        )
+        main(resume_messages=saved_messages, resume_session_id=session_id)
         sys.exit(0)
 
     # Non-interactive commands use a short-lived TempSandbox when needed
@@ -259,5 +420,69 @@ if __name__ == "__main__":
             ok = gw.consent.deny(args.id)
             print("Denied." if ok else "Request not found.")
             sys.exit(0)
+
+    # --- Auth command handlers ---
+    if args.cmd == "login":
+        from hamster.auth.oauth  import AuthFlow
+        from hamster.auth.store  import SecureTokenStore
+        from hamster.auth.user   import get_profile
+        import os
+
+        client_id     = os.environ.get("GOOGLE_CLIENT_ID",     "").strip()
+        client_secret = os.environ.get("GOOGLE_CLIENT_SECRET", "").strip()
+
+        # Load from .env if not already in environment
+        env_path = Path.cwd() / ".env"
+        if env_path.exists() and (not client_id or not client_secret):
+            for line in env_path.read_text(encoding="utf-8").splitlines():
+                line = line.strip()
+                if line.startswith("#") or "=" not in line:
+                    continue
+                key, _, val = line.partition("=")
+                key, val = key.strip(), val.strip()
+                if key == "GOOGLE_CLIENT_ID"     and not client_id:
+                    client_id = val
+                elif key == "GOOGLE_CLIENT_SECRET" and not client_secret:
+                    client_secret = val
+
+        try:
+            flow = AuthFlow(client_id=client_id, client_secret=client_secret)
+            token_data = flow.run()
+            profile    = get_profile(token_data)
+            # Persist tokens + profile together so whoami works offline
+            payload = {
+                **token_data,
+                "email":   profile.email,
+                "name":    profile.name,
+                "picture": profile.picture,
+                "sub":     profile.sub,
+            }
+            SecureTokenStore().save(payload)
+            print_login_success(profile.email)
+        except Exception as exc:  # noqa: BLE001
+            print(f"\n❌  Login failed: {exc}")
+            sys.exit(1)
+        sys.exit(0)
+
+    if args.cmd == "logout":
+        from hamster.auth.store import SecureTokenStore
+        SecureTokenStore().delete()
+        from rich.console import Console
+        Console().print(
+            "[bold gold3]🐹  Logged out.[/] Credentials cleared from all storage backends."
+        )
+        sys.exit(0)
+
+    if args.cmd == "whoami":
+        from hamster.auth.store import SecureTokenStore
+        payload = SecureTokenStore().load()
+        if not payload or not payload.get("email"):
+            from rich.console import Console
+            Console().print(
+                "[yellow]⚠️  Not logged in.[/] Run [bold cyan]hamster login[/] first."
+            )
+            sys.exit(1)
+        print_whoami(payload)
+        sys.exit(0)
 
     parser.print_help()

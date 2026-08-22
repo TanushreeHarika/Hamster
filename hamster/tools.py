@@ -391,6 +391,56 @@ def write_file(filepath: str, content: str) -> str:
         return f"Error creating file {filepath}: {e}"
 
 
+def delete_file(filepath: str) -> str:
+    """Delete a file from the draft workspace using Python's filesystem API.
+
+    This tool NEVER invokes a shell command (``rm`` etc.) — it is exempt from
+    the shell-command security blacklist.  Boundary enforcement is handled by
+    :func:`src.security.assert_sandbox_path` which resolves symlinks on both
+    sides, so it works correctly on macOS where ``/var`` is a symlink to
+    ``/private/var``.
+
+    Args:
+        filepath: Project-relative path of the file to delete
+                  (e.g. ``'login.html'``, ``'src/old_module.py'``).
+
+    Returns:
+        A one-line status string.
+    """
+    sandbox = _get_sandbox()
+    root_str = str(sandbox.workspace)
+    try:
+        # assert_sandbox_path resolves symlinks on BOTH the root and the
+        # candidate, so /var vs /private/var is handled correctly on macOS.
+        absolute_path = assert_sandbox_path(filepath, root=root_str)
+    except PathSecurityViolation as exc:
+        return _security_violation(str(exc))
+
+    staged = Path(absolute_path)
+    if not staged.exists():
+        return f"File not found in draft workspace: {filepath}"
+
+    if staged.is_dir():
+        return (
+            f"'{filepath}' is a directory. "
+            "Use delete_file only for individual files."
+        )
+
+    with sandbox_status(f"🗑️  Deleting {filepath}..."):
+        staged.unlink(missing_ok=True)
+        # Prune empty parent directories up to (but not including) the workspace root
+        workspace = Path(os.path.realpath(root_str))
+        parent = staged.parent
+        while parent != workspace:
+            try:
+                parent.rmdir()
+            except OSError:
+                break
+            parent = parent.parent
+
+    return f"Deleted {filepath}."
+
+
 def web_search(query: str) -> str:
     if not confirm(f"🐹 Web search: {query}"):
         return "Denied."
@@ -634,6 +684,60 @@ def pending_change_diff() -> list[str]:
         lines.extend(_make_patch_preview(str(rel), before, after))
     return lines
 
+def undo_workspace(
+    steps: int,
+    session_id: str,
+    store: "SessionStore",  # type: ignore[name-defined]  # imported at call site
+) -> tuple[bool, str]:
+    """Restore the sandbox workspace to the state *steps* turns ago.
+
+    This function DOES NOT modify the messages list — conversation history
+    is always preserved.  Only workspace files are rolled back.
+
+    Args:
+        steps:      How many turns back to restore (1 = most recent checkpoint).
+        session_id: The active session ID from the session store.
+        store:      The :class:`~hamster.session_store.SessionStore` instance.
+
+    Returns:
+        ``(success, message)`` — *success* is False when no checkpoint exists
+        at the requested depth.
+    """
+    from hamster.checkpoint import CheckpointStore
+
+    if steps < 1:
+        return False, "Steps must be at least 1."
+
+    checkpoint_id = store.get_checkpoint_at_turn(session_id, turn_offset=steps)
+    if checkpoint_id is None:
+        available = len(store.list_checkpoints_for_session(session_id))
+        return (
+            False,
+            f"No checkpoint found {steps} turn{'s' if steps != 1 else ''} ago. "
+            f"Only {available} checkpoint{'s are' if available != 1 else ' is'} available.",
+        )
+
+    try:
+        sandbox = _get_sandbox()
+    except RuntimeError as exc:
+        return False, f"No active sandbox: {exc}"
+
+    ckpt_store = CheckpointStore()
+    result = ckpt_store.restore_checkpoint(checkpoint_id, sandbox.workspace)
+
+    n = steps
+    parts: list[str] = []
+    if result["restored"]:
+        parts.append(f"restored {result['restored']} file{'s' if result['restored'] != 1 else ''}")
+    if result["removed"]:
+        parts.append(f"removed {result['removed']} file{'s' if result['removed'] != 1 else ''}")
+    if result["unchanged"]:
+        parts.append(f"{result['unchanged']} unchanged")
+
+    detail = ", ".join(parts) if parts else "no changes needed"
+    msg = f"Reverted {n} turn{'s' if n != 1 else ''}: {detail}."
+    return True, msg
+
 
 # ---------------------------------------------------------------------------
 # Tool schema definitions for OpenRouter
@@ -742,9 +846,31 @@ TOOL_SCHEMAS = [
     {
         "type": "function",
         "function": {
+            "name": "delete_file",
+            "description": (
+                "Delete a file from the draft workspace without invoking any shell command. "
+                "Use this instead of run_sandbox_command('rm ...') — it bypasses the shell "
+                "security blacklist and operates safely via Python's filesystem API. "
+                "Use project-relative paths like 'login.html' or 'src/old_module.py'. "
+                "The file is removed from the draft only; the real project is unchanged until /apply."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "filepath": {"type": "string"},
+                },
+                "required": ["filepath"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "run_sandbox_command",
             "description": (
-                "Run a non-destructive terminal command after security filtering and user approval."
+                "Run a non-destructive terminal command after security filtering and user approval. "
+                "Do NOT use this for file deletion — use delete_file instead."
             ),
             "parameters": {
                 "type": "object",
@@ -761,6 +887,7 @@ TOOL_FUNCTIONS = {
     "read_file": read_file,
     "edit_file_patch": edit_file_patch,
     "write_file": write_file,
+    "delete_file": delete_file,
     "web_search": web_search,
     "run_sandbox_command": run_sandbox_command,
 }

@@ -127,9 +127,153 @@ def print_help() -> None:
     table.add_row("/pending", "Show pending draft changes")
     table.add_row("/apply", "Save pending draft changes")
     table.add_row("/sync", "Refresh draft state")
+    table.add_row("/undo [N]", "Revert workspace N turns (default 1), keeps conversation log")
+    table.add_row("/login", "Log in with Google (OAuth 2.0 PKCE flow)")
+    table.add_row("/whoami", "Show the currently logged-in user")
+    table.add_row("/logout", "Clear saved Google credentials")
     table.add_row("/clear", "Clear the terminal and redraw the splash")
     table.add_row("/exit", "Leave Hamster (prints farewell graphic)")
     console.print(table)
+    console.print()
+    tip = Text()
+    tip.append("CLI tip: ", style="bold gold3")
+    tip.append("hamster list-sessions", style="bold cyan")
+    tip.append("  ·  ", style="dim")
+    tip.append("hamster resume <session_id>", style="bold cyan")
+    console.print(tip)
+
+
+def print_session_resumed(session_id: str, msg_count: int, working_dir: str = "") -> None:
+    """Print a banner when a saved session is restored."""
+    body = Table.grid(padding=(0, 1))
+    body.add_column(style="dim")
+    body.add_column(style="white")
+    body.add_row("Session", f"[bold cyan]{session_id}[/]")
+    if working_dir:
+        body.add_row("Working dir", working_dir)
+    body.add_row("Messages", f"{msg_count} message{'' if msg_count == 1 else 's'} restored")
+    console.print(
+        Panel(
+            body,
+            title="[bold gold3]🐹 Resuming session[/]",
+            border_style=THEME["primary"],
+            box=box.ROUNDED,
+            padding=(1, 2),
+        )
+    )
+
+
+def print_sessions_table(sessions: list[dict]) -> None:
+    """Render a Rich table of past sessions for `hamster list-sessions`."""
+    if not sessions:
+        console.print(
+            Panel(
+                "No saved sessions yet.\nStart a new session with [bold cyan]hamster[/].",
+                border_style=THEME["secondary"],
+                title="[bold gold3]Sessions[/]",
+            )
+        )
+        return
+
+    table = Table(
+        title=f"[bold {THEME['primary']}]Saved Sessions[/]",
+        border_style=THEME["secondary"],
+        box=box.ROUNDED,
+        show_lines=True,
+    )
+    table.add_column("Session ID", style=f"bold {THEME['secondary']}", no_wrap=True)
+    table.add_column("Created", style="dim", no_wrap=True)
+    table.add_column("Last Active", style="dim", no_wrap=True)
+    table.add_column("Working Dir", style="white", overflow="fold")
+    table.add_column("Last Prompt", style="italic white", overflow="fold")
+
+    for s in sessions:
+        created = s.get("created_at", "")[:16].replace("T", " ")
+        updated = s.get("updated_at", "")[:16].replace("T", " ")
+        wdir = s.get("working_dir", "") or "—"
+        prompt_raw = s.get("last_prompt") or "—"
+        prompt = prompt_raw[:60] + "…" if len(prompt_raw) > 60 else prompt_raw
+        table.add_row(s["session_id"], created, updated, wdir, prompt)
+
+    console.print(table)
+    console.print(
+        f"  Resume with: [bold cyan]hamster resume <session_id>[/]",
+        style="dim",
+    )
+
+
+def print_undo_result(message: str, success: bool = True) -> None:
+    """Render the result of an /undo operation.
+
+    Args:
+        message: The status string returned by :func:`hamster.tools.undo_workspace`.
+        success: When *True* renders a gold success panel; when *False* renders
+                 an amber warning panel.
+    """
+    if success:
+        console.print(
+            Panel(
+                Text(f"🔙  {message}", style="bold white"),
+                title="[bold gold3]Undo[/]",
+                border_style=THEME["primary"],
+                box=box.ROUNDED,
+                padding=(0, 2),
+            )
+        )
+    else:
+        console.print(
+            Panel(
+                Text(f"⚠️  {message}", style="bold yellow"),
+                title="[bold yellow]Undo — Nothing to Revert[/]",
+                border_style=THEME["warning"],
+                box=box.ROUNDED,
+                padding=(0, 2),
+            )
+        )
+
+
+def print_login_success(email: str) -> None:
+    """Render a success banner after ``hamster login`` completes."""
+    console.print(
+        Panel(
+            Text.assemble(
+                ("🐹  Logged in as ", "bold white"),
+                (email, f"bold {THEME['secondary']}"),
+            ),
+            title="[bold gold3]Login Successful[/]",
+            border_style=THEME["success"],
+            box=box.ROUNDED,
+            padding=(0, 2),
+        )
+    )
+
+
+def print_whoami(profile: dict) -> None:
+    """Render a Rich panel showing the currently logged-in user's profile.
+
+    Args:
+        profile: Dict with keys ``email``, ``name``, ``picture``, ``sub``.
+    """
+    body = Table.grid(padding=(0, 2))
+    body.add_column(style="dim", no_wrap=True)
+    body.add_column(style="white")
+    if profile.get("name"):
+        body.add_row("🧪 Name",    profile["name"])
+    if profile.get("email"):
+        body.add_row("📧 Email",   profile["email"])
+    if profile.get("sub"):
+        body.add_row("🔑 Google ID", profile["sub"])
+    if profile.get("picture"):
+        body.add_row("🖼️  Picture",  f"[link={profile['picture']}]{profile['picture']}[/link]")
+    console.print(
+        Panel(
+            body,
+            title="[bold gold3]🐹 Hamster — Logged-in Account[/]",
+            border_style=THEME["secondary"],
+            box=box.ROUNDED,
+            padding=(1, 2),
+        )
+    )
 
 
 def render_action_summary(action: str, details: Mapping[str, str]) -> None:
@@ -195,7 +339,8 @@ def request_save_changes(changes: list[str], diff_lines: list[str]) -> str:
     options.add_row("[bold red]r[/]", "discard all")
     options.add_row("[bold yellow]v[/]", "view diff")
 
-    while True:
+    # Build the panel once and reuse for the first prompt
+    def _render_panel() -> None:
         panel_body = Table.grid(expand=True)
         panel_body.add_column()
         panel_body.add_row(Text(body, style="white"))
@@ -211,6 +356,9 @@ def request_save_changes(changes: list[str], diff_lines: list[str]) -> str:
                 padding=(1, 2),
             )
         )
+
+    _render_panel()
+    while True:
         answer = prompt_user(
             f"[bold {THEME['primary']}]Choice[/] "
             f"[green]a[/]/[red]r[/]/[yellow]v[/] ([dim]r[/]): "
@@ -221,6 +369,11 @@ def request_save_changes(changes: list[str], diff_lines: list[str]) -> str:
             return "reject"
         if answer in {"v", "view"}:
             render_diff("Draft changes", diff_lines)
+            # After showing the diff just re-ask inline — no full panel repeat
+            console.print(
+                f"[dim]a save all · r discard all[/dim]",
+                justify="right",
+            )
             continue
         console.print("Please answer a, r, or v.", style=THEME["warning"])
 
@@ -236,8 +389,12 @@ def render_tool_result(name: str, content: str) -> None:
     # Skip for denied/successful quiet operations
     if content in ("Denied.", "User denied."):
         return
-    # Minimal render for errors and status messages
-    if content.startswith("ERROR:") or content.startswith("SECURITY"):
+    # SECURITY VIOLATION strings are already rendered by render_security_violation()
+    # called inside _security_violation() — do NOT render a second panel here.
+    if content.startswith("SECURITY VIOLATION:"):
+        return
+    # Minimal render for errors and other status messages
+    if content.startswith("ERROR:"):
         console.print(Panel(content, border_style=THEME["danger"], title="⚠️  Tool Error"))
     elif content.startswith("Denied") or content.startswith("User denied"):
         console.print(Panel(f"🐹 {content}", border_style=THEME["warning"], title="Hamster Notice"))

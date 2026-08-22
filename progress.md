@@ -94,9 +94,61 @@
 - Added `tests/test_improvements.py` with 37 new tests; **total test count raised from 26 → 63,
   all passing**.
 
+## Version 0.4: Persistent Resumable Sessions — Completed
+
+- Added `hamster/session_store.py` — a `SessionStore` class backed by `sqlite3` (stdlib, zero new
+  dependencies). Stores session metadata and full message history in `~/.hamster/sessions.db`.
+  - Schema: `sessions` table (session_id, working_dir, created_at, updated_at, last_prompt,
+    token_usage) and `messages` table with FK cascade and WAL journal mode.
+  - Public API: `create_session`, `save_message`, `save_messages` (bulk idempotent upsert),
+    `load_messages`, `update_meta`, `list_sessions`, `get_session`, `delete_session`.
+- Wired `SessionStore` into `hamster/cli.py` `main()`:
+  - A new session row is created at startup; `save_messages` + `update_meta` are called after
+    every agent turn so the full conversation is always persisted to disk.
+  - `main()` accepts `resume_messages` and `resume_session_id` kwargs for seamless resumption.
+- Added `hamster resume <session_id>` CLI sub-command: loads history from the store, prints a
+  gold "Resuming 🐹" banner, and re-enters the interactive loop with full context restored.
+- Added `hamster list-sessions` CLI sub-command: renders a Rich table of all past sessions with
+  Session ID, Created, Last Active, Working Dir, and Last Prompt columns.
+- Added two UI helpers in `hamster/ui.py`: `print_session_resumed` (resume banner) and
+  `print_sessions_table` (sessions listing). Updated `/help` output with a CLI tip line.
+- Added `tests/test_session_store.py` with 19 new tests across five test classes:
+  `TestSessionCreation`, `TestGetAndDelete`, `TestUpdateMeta`, `TestMessagePersistence`,
+  `TestListSessions`. All use `tempfile.TemporaryDirectory` — no real DB touched.
+- **Total test count raised from 119 → 138, all passing (17 skipped as before).**
+
+## Version 0.5: Multi-Step Undo / Checkpoint Engine — Completed
+
+- Added `hamster/checkpoint.py` — a `CheckpointStore` class using pure-Python CAS (SHA-256 blob
+  deduplication + JSON manifests) stored in `~/.hamster/checkpoints/`. Zero new dependencies.
+  - Blob layout: `blobs/<xx>/<sha256>` (content-addressed, write-once).
+  - Manifest layout: `manifests/ckpt_<hex>.json` (maps workspace rel-path → blob SHA).
+  - Public API: `create_checkpoint`, `restore_checkpoint`, `list_checkpoints`,
+    `delete_checkpoint`, `gc_blobs`.
+  - `_IGNORE_DIRS` set skips `.git`, `__pycache__`, `.venv`, etc.
+- Extended `hamster/session_store.py`:
+  - New `checkpoints` table (checkpoint_id PK, session_id FK cascade, turn_index, created_at).
+  - New methods: `save_checkpoint`, `list_checkpoints_for_session`, `get_checkpoint_at_turn`.
+- Added `undo_workspace(steps, session_id, store) → (bool, str)` to `hamster/tools.py`.
+  - Resolves `turn_offset=N` via the session store, delegates restore to `CheckpointStore`.
+  - **Never touches the messages list** — conversation history is always preserved.
+- Wired into `hamster/cli.py` `main()`:
+  - `turn_index` counter increments on every user turn.
+  - A CAS checkpoint is created **before** every agent turn and cross-referenced in the DB.
+  - `/undo [N]` command handler parses optional N (default 1) and calls `undo_workspace`.
+  - Resumed sessions inherit the existing turn counter from saved checkpoint count.
+- Added `print_undo_result(message, success)` to `hamster/ui.py`; `/help` now lists `/undo [N]`.
+- Added `tests/test_checkpoint.py` with 16 new tests across 5 classes:
+  `TestCheckpointBlobs`, `TestCheckpointCreate`, `TestCheckpointRestore`,
+  `TestSessionStoreCheckpoints`, `TestMultiTurnRestore`.
+- **Total test count raised from 138 → 156, all passing (17 skipped as before).**
+
 ## Left To Do
 
-- Add richer transcript persistence and resumable sessions.
 - Add package distribution docs for user-level installation with `uv tool install`.
 - Add `tiktoken` as an optional extras dependency in `pyproject.toml` for users who want exact BPE counts.
 - Implement `launch_native` in `hamster/runtime.py` with Linux namespace/cgroup/seccomp setup.
+- Add interactive PTY engine and gRPC control plane (Feature #2).
+- Add incremental disk-cached AST symbol graph (Feature #3).
+- Add `hamster checkpoints` CLI sub-command for inspecting/pruning checkpoint history.
+- Add `gc_blobs` scheduled cleanup on session exit.

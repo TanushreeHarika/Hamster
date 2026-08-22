@@ -67,8 +67,9 @@ WORKFLOW:
 2. Use read_file("relative/path") to inspect a file.
 3. Use write_file("relative/path", content) to create files or replace an entire file for broad rewrites.
 4. Use edit_file_patch("relative/path", target_text, replacement_text) only for small exact surgical edits.
-5. Use run_sandbox_command for exploratory shell commands.
-6. Use web_search only for technical documentation, APIs, syntax examples, or library verification.
+5. Use delete_file("relative/path") to delete a file. ALWAYS use this instead of run_sandbox_command("rm ...") — it is safe, shell-free, and never triggers a security violation.
+6. Use run_sandbox_command ONLY for exploratory read-only shell commands (e.g. ls, cat, find, grep). NEVER use it for rm, chmod, sudo, or any file deletion.
+7. Use web_search only for technical documentation, APIs, syntax examples, or library verification.
 
 PATH CONVENTIONS:
 - Always use ROOT-RELATIVE paths: "hamster/agent.py", "README.md", "src/security.py".

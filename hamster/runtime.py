@@ -77,23 +77,46 @@ class RuntimeOrchestrator:
             },
         )
 
-    def launch_container(self, image: str, command: str, *, timeout: int | None = None) -> ExecutionResult:
+    def launch_container(
+        self,
+        image: str,
+        command: str,
+        *,
+        timeout: int | None = None,
+        require_isolation: bool = False,
+    ) -> ExecutionResult:
         """Launch *command* inside an ephemeral Docker container.
 
-        Delegates to :func:`src.container.execute_sandboxed` which uses
+        Delegates to :class:`src.container.DockerSandboxBackend` which uses
         ``docker run --rm`` with ``--network=none`` and resource caps.
-        Falls back to host execution transparently when Docker is unavailable.
+
+        Args:
+            image: Docker image to run (e.g. ``'python:3.11-slim'``).
+            command: Shell command string to execute inside the container.
+            timeout: Command timeout in seconds (currently advisory; the
+                backend's internal ``TIMEOUT`` constant governs actual limits).
+            require_isolation: When ``True``, raise
+                :class:`src.container.IsolationError` if Docker is unavailable
+                rather than falling back to host execution.  Defaults to
+                ``False`` for backward compatibility.
+
+        Returns:
+            :class:`ExecutionResult` with stdout, stderr, exit_code, and meta.
         """
         try:
             from src.container import DockerSandboxBackend
         except ImportError:
             raise RuntimeError("src.container module not found")
 
-        backend = DockerSandboxBackend(image=image)
+        backend = DockerSandboxBackend(image=image, require_isolation=require_isolation)
         result = backend.execute_command(command, cwd=None)
         return ExecutionResult(
             exit_code=result.returncode,
             stdout=result.stdout,
             stderr=result.stderr,
-            meta={"image": image, "docker_available": backend.is_available()},
+            meta={
+                "image": image,
+                "docker_available": backend.is_available(),
+                "require_isolation": require_isolation,
+            },
         )
