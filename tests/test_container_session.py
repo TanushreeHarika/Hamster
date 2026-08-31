@@ -5,6 +5,7 @@ Docker-dependent tests are skipped when Docker is not available on the
 current machine so the full suite still passes in CI environments without
 a Docker daemon.
 """
+
 from __future__ import annotations
 
 import os
@@ -13,15 +14,13 @@ import time
 import unittest
 from unittest.mock import patch
 
-
 # ---------------------------------------------------------------------------
 # Helper: detect Docker at import time so @skipIf works
 # ---------------------------------------------------------------------------
 
+
 def _docker_available() -> bool:
-    if not any(
-        __import__("shutil").which(cmd) for cmd in ("docker",)
-    ):
+    if not any(__import__("shutil").which(cmd) for cmd in ("docker",)):
         return False
     try:
         r = subprocess.run(
@@ -31,11 +30,32 @@ def _docker_available() -> bool:
             check=False,
         )
         return r.returncode == 0
-    except Exception:
+    except (OSError, subprocess.SubprocessError, ValueError):
         return False
 
 
-DOCKER_AVAILABLE = _docker_available()
+# ---------------------------------------------------------------------------
+# HAMSTER_SKIP_DOCKER_TESTS=1  — set in CI to skip ALL Docker integration
+# tests regardless of whether a daemon is reachable.
+#
+# Root cause of intermittent CI failures:
+#   ubuntu-latest on GitHub Actions ships with Docker installed AND the daemon
+#   running, so _docker_available() returns True and @_SKIP_NO_DOCKER tests
+#   execute.  Those tests call `docker run python:3.11-slim` which requires an
+#   image pull — a slow, flaky network operation that causes timeouts.
+#
+# Setting this env var is the single authoritative way to mark "this
+# environment does not support Docker integration tests".  The variable must
+# be set BEFORE the test module is imported (i.e. in the CI job env block).
+# ---------------------------------------------------------------------------
+
+_FORCE_SKIP = os.environ.get("HAMSTER_SKIP_DOCKER_TESTS", "").strip().lower() in (
+    "1",
+    "true",
+    "yes",
+)
+
+DOCKER_AVAILABLE = False if _FORCE_SKIP else _docker_available()
 _SKIP_NO_DOCKER = unittest.skipIf(
     not DOCKER_AVAILABLE,
     "Docker daemon not available — skipping Docker-dependent tests",
@@ -46,11 +66,13 @@ _SKIP_NO_DOCKER = unittest.skipIf(
 # 1. IsolationError import + env var
 # ---------------------------------------------------------------------------
 
+
 class TestIsolationErrorImport(unittest.TestCase):
     """IsolationError is importable and is a RuntimeError subclass."""
 
     def test_isolation_error_importable(self) -> None:
         from src.container import IsolationError
+
         self.assertTrue(issubclass(IsolationError, RuntimeError))
         # Can be instantiated and raised normally
         with self.assertRaises(IsolationError):
@@ -62,11 +84,13 @@ class TestIsolationErrorImport(unittest.TestCase):
             os.environ.pop("HAMSTER_REQUIRE_ISOLATION", None)
             # Re-evaluate the helper
             from src.container import _read_require_isolation
+
             self.assertFalse(_read_require_isolation())
 
     def test_require_isolation_env_var_true_values(self) -> None:
         """REQUIRE_ISOLATION truthy values: '1', 'true', 'yes'."""
         from src.container import _read_require_isolation
+
         for val in ("1", "true", "True", "TRUE", "yes", "YES"):
             with patch.dict(os.environ, {"HAMSTER_REQUIRE_ISOLATION": val}):
                 self.assertTrue(_read_require_isolation(), f"Expected True for {val!r}")
@@ -74,20 +98,24 @@ class TestIsolationErrorImport(unittest.TestCase):
     def test_require_isolation_env_var_false_values(self) -> None:
         """REQUIRE_ISOLATION falsy values: '0', 'false', 'no', ''."""
         from src.container import _read_require_isolation
+
         for val in ("0", "false", "False", "no", "", "off"):
             with patch.dict(os.environ, {"HAMSTER_REQUIRE_ISOLATION": val}):
-                self.assertFalse(_read_require_isolation(), f"Expected False for {val!r}")
+                self.assertFalse(
+                    _read_require_isolation(), f"Expected False for {val!r}"
+                )
 
 
 # ---------------------------------------------------------------------------
 # 2. DockerSandboxBackend strict mode
 # ---------------------------------------------------------------------------
 
-class TestDockerSandboxBackendStrictMode(unittest.TestCase):
 
+class TestDockerSandboxBackendStrictMode(unittest.TestCase):
     def test_strict_mode_raises_isolation_error_when_docker_unavailable(self) -> None:
         """require_isolation=True + no Docker → IsolationError, not host exec."""
         from src.container import DockerSandboxBackend, IsolationError
+
         backend = DockerSandboxBackend(require_isolation=True)
         backend._available = False  # Force unavailable
         with self.assertRaises(IsolationError):
@@ -96,6 +124,7 @@ class TestDockerSandboxBackendStrictMode(unittest.TestCase):
     def test_lenient_mode_falls_back_to_host_when_docker_unavailable(self) -> None:
         """require_isolation=False + no Docker → host fallback, no exception."""
         from src.container import DockerSandboxBackend
+
         backend = DockerSandboxBackend(require_isolation=False)
         backend._available = False  # Force unavailable
         result = backend.execute_command("echo hello")
@@ -105,6 +134,7 @@ class TestDockerSandboxBackendStrictMode(unittest.TestCase):
     def test_default_mode_is_lenient(self) -> None:
         """Default backend (no args) uses require_isolation=False."""
         from src.container import DockerSandboxBackend
+
         backend = DockerSandboxBackend()
         backend._available = False
         # Should not raise
@@ -115,6 +145,7 @@ class TestDockerSandboxBackendStrictMode(unittest.TestCase):
     def test_strict_mode_allows_execution_when_docker_available(self) -> None:
         """require_isolation=True with real Docker should NOT raise."""
         from src.container import DockerSandboxBackend, IsolationError
+
         backend = DockerSandboxBackend(require_isolation=True)
         # Should NOT raise — Docker is available
         try:
@@ -129,11 +160,12 @@ class TestDockerSandboxBackendStrictMode(unittest.TestCase):
 # 3. DockerSession lifecycle (Docker required)
 # ---------------------------------------------------------------------------
 
-class TestDockerSessionLifecycle(unittest.TestCase):
 
+class TestDockerSessionLifecycle(unittest.TestCase):
     @_SKIP_NO_DOCKER
     def test_start_produces_container_id(self) -> None:
         from src.container import DockerSession
+
         session = DockerSession()
         try:
             session.start()
@@ -146,6 +178,7 @@ class TestDockerSessionLifecycle(unittest.TestCase):
     @_SKIP_NO_DOCKER
     def test_is_alive_false_after_stop(self) -> None:
         from src.container import DockerSession
+
         session = DockerSession()
         session.start()
         cid = session._container_id
@@ -167,6 +200,7 @@ class TestDockerSessionLifecycle(unittest.TestCase):
     def test_idempotent_stop(self) -> None:
         """Calling stop() twice should not raise."""
         from src.container import DockerSession
+
         session = DockerSession()
         session.start()
         session.stop()
@@ -175,6 +209,7 @@ class TestDockerSessionLifecycle(unittest.TestCase):
     @_SKIP_NO_DOCKER
     def test_context_manager_starts_and_stops(self) -> None:
         from src.container import DockerSession
+
         with DockerSession() as session:
             self.assertTrue(session.is_alive())
         # After exiting the context manager, container should be stopped
@@ -185,11 +220,12 @@ class TestDockerSessionLifecycle(unittest.TestCase):
 # 4. DockerSession command execution (Docker required)
 # ---------------------------------------------------------------------------
 
-class TestDockerSessionExecution(unittest.TestCase):
 
+class TestDockerSessionExecution(unittest.TestCase):
     @_SKIP_NO_DOCKER
     def test_execute_echo(self) -> None:
         from src.container import DockerSession
+
         with DockerSession() as session:
             result = session.execute("echo hello_hamster")
         self.assertEqual(result.returncode, 0)
@@ -198,13 +234,17 @@ class TestDockerSessionExecution(unittest.TestCase):
     @_SKIP_NO_DOCKER
     def test_execute_captures_stderr(self) -> None:
         from src.container import DockerSession
+
         with DockerSession() as session:
-            result = session.execute("python3 -c \"import sys; sys.stderr.write('errout')\"")
+            result = session.execute(
+                "python3 -c \"import sys; sys.stderr.write('errout')\""
+            )
         self.assertIn("errout", result.stderr)
 
     @_SKIP_NO_DOCKER
     def test_execute_nonzero_exit_code(self) -> None:
         from src.container import DockerSession
+
         with DockerSession() as session:
             result = session.execute("exit 42")
         self.assertEqual(result.returncode, 42)
@@ -214,11 +254,12 @@ class TestDockerSessionExecution(unittest.TestCase):
 # 5. cwd persistence (Docker required)
 # ---------------------------------------------------------------------------
 
-class TestDockerSessionCwdPersistence(unittest.TestCase):
 
+class TestDockerSessionCwdPersistence(unittest.TestCase):
     @_SKIP_NO_DOCKER
     def test_cwd_default_is_workspace(self) -> None:
         from src.container import DockerSession
+
         session = DockerSession()
         self.assertEqual(session.cwd, "/workspace")
         session.start()
@@ -232,6 +273,7 @@ class TestDockerSessionCwdPersistence(unittest.TestCase):
     def test_cwd_change_persists_across_calls(self) -> None:
         """Updating session.cwd before the next execute uses the new directory."""
         from src.container import DockerSession
+
         with DockerSession() as session:
             # Create a subdirectory and switch to it
             session.execute("mkdir -p /workspace/subdir")
@@ -244,11 +286,12 @@ class TestDockerSessionCwdPersistence(unittest.TestCase):
 # 6. Environment variable persistence (Docker required)
 # ---------------------------------------------------------------------------
 
-class TestDockerSessionEnvPersistence(unittest.TestCase):
 
+class TestDockerSessionEnvPersistence(unittest.TestCase):
     @_SKIP_NO_DOCKER
     def test_env_var_forwarded_to_exec(self) -> None:
         from src.container import DockerSession
+
         with DockerSession() as session:
             session.env["MY_VAR"] = "hamster_value"
             result = session.execute("echo $MY_VAR")
@@ -257,6 +300,7 @@ class TestDockerSessionEnvPersistence(unittest.TestCase):
     @_SKIP_NO_DOCKER
     def test_multiple_env_vars_forwarded(self) -> None:
         from src.container import DockerSession
+
         with DockerSession() as session:
             session.env["FOO"] = "foo_val"
             session.env["BAR"] = "bar_val"
@@ -269,12 +313,13 @@ class TestDockerSessionEnvPersistence(unittest.TestCase):
 # 7. Self-healing container recovery (Docker required)
 # ---------------------------------------------------------------------------
 
-class TestDockerSessionSelfHealing(unittest.TestCase):
 
+class TestDockerSessionSelfHealing(unittest.TestCase):
     @_SKIP_NO_DOCKER
     def test_self_heal_after_container_stopped_externally(self) -> None:
         """If the container is killed externally, the next execute() recovers."""
         from src.container import DockerSession
+
         session = DockerSession()
         session.start()
         old_cid = session._container_id
@@ -306,6 +351,7 @@ class TestDockerSessionSelfHealing(unittest.TestCase):
     def test_self_heal_restores_cwd(self) -> None:
         """After self-healing, cwd is restored in the new container."""
         from src.container import DockerSession
+
         session = DockerSession()
         session.start()
 
@@ -335,11 +381,12 @@ class TestDockerSessionSelfHealing(unittest.TestCase):
 # 8. Backward compatibility
 # ---------------------------------------------------------------------------
 
-class TestBackwardCompatibility(unittest.TestCase):
 
+class TestBackwardCompatibility(unittest.TestCase):
     def test_container_result_namedtuple(self) -> None:
         """ContainerResult remains a NamedTuple with the same fields."""
         from src.container import ContainerResult
+
         r = ContainerResult(stdout="out", stderr="err", returncode=0)
         self.assertEqual(r.stdout, "out")
         self.assertEqual(r.stderr, "err")
@@ -348,19 +395,22 @@ class TestBackwardCompatibility(unittest.TestCase):
     def test_execute_sandboxed_callable(self) -> None:
         """execute_sandboxed() still works with no extra arguments."""
         from src.container import execute_sandboxed
+
         result = execute_sandboxed("echo compat_check")
         self.assertIsNotNone(result)
         # Should succeed (either via Docker or host fallback)
         self.assertIn("compat_check", result.stdout)
 
     def test_get_backend_returns_docker_sandbox_backend(self) -> None:
-        from src.container import get_backend, DockerSandboxBackend
+        from src.container import DockerSandboxBackend, get_backend
+
         backend = get_backend()
         self.assertIsInstance(backend, DockerSandboxBackend)
 
     def test_docker_sandbox_backend_existing_api(self) -> None:
         """DockerSandboxBackend(no args) still works exactly as before."""
         from src.container import DockerSandboxBackend
+
         backend = DockerSandboxBackend()
         backend._available = False  # Force fallback
         result = backend.execute_command("echo legacy")
@@ -370,13 +420,15 @@ class TestBackwardCompatibility(unittest.TestCase):
     def test_docker_ephemeral_backend_alias(self) -> None:
         """DockerEphemeralBackend is an alias for DockerSandboxBackend."""
         from src.container import DockerEphemeralBackend, DockerSandboxBackend
+
         self.assertIs(DockerEphemeralBackend, DockerSandboxBackend)
 
     def test_get_session_returns_docker_session(self) -> None:
         """get_session() returns a DockerSession singleton."""
-        from src.container import get_session, DockerSession
         # Reset module singleton for clean test
         import src.container as _mod
+        from src.container import DockerSession, get_session
+
         orig = _mod._session
         _mod._session = None
         try:

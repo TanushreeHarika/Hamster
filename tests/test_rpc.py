@@ -1,13 +1,12 @@
-import json
 import shutil
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from hamster.rpc import RPCGateway, SessionManager
+from hamster.tools import cleanup_sandbox, configure_sandbox, init_session_state
 from src.sandbox import TempSandbox
-from hamster.rpc import SessionManager, RPCGateway
-from hamster.tools import configure_sandbox, init_session_state, cleanup_sandbox
 
 
 class TestRPCGateway(unittest.TestCase):
@@ -21,8 +20,11 @@ class TestRPCGateway(unittest.TestCase):
 
         # patch tools to avoid interactive prompts
         self.p1 = patch("hamster.tools.confirm", return_value=True)
-        self.p2 = patch("hamster.tools._project_root", return_value=str(self.test_project))
-        self.p1.start(); self.p2.start()
+        self.p2 = patch(
+            "hamster.tools._project_root", return_value=str(self.test_project)
+        )
+        self.p1.start()
+        self.p2.start()
 
         init_session_state()
         self.sandbox = TempSandbox(project_root=self.test_project)
@@ -32,7 +34,8 @@ class TestRPCGateway(unittest.TestCase):
         self.gateway = RPCGateway(self.sessions)
 
     def tearDown(self):
-        self.p1.stop(); self.p2.stop()
+        self.p1.stop()
+        self.p2.stop()
         cleanup_sandbox()
 
     def test_session_and_exec(self):
@@ -52,13 +55,17 @@ class TestRPCGateway(unittest.TestCase):
 
         # modify the file
         self.mock_file.write_text("modified content\n", encoding="utf-8")
-        self.assertEqual(self.mock_file.read_text(encoding="utf-8"), "modified content\n")
+        self.assertEqual(
+            self.mock_file.read_text(encoding="utf-8"), "modified content\n"
+        )
 
         # restore
         restore_res = self.gateway.restore_checkpoint(sid, snapshot)
         self.assertIn("restored", restore_res)
         # file should be back to original
-        self.assertEqual(self.mock_file.read_text(encoding="utf-8"), "original content\n")
+        self.assertEqual(
+            self.mock_file.read_text(encoding="utf-8"), "original content\n"
+        )
 
 
 if __name__ == "__main__":

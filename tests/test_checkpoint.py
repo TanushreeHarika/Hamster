@@ -2,6 +2,7 @@
 
 All tests use temporary directories — no real ~/.hamster/ data is touched.
 """
+
 from __future__ import annotations
 
 import tempfile
@@ -11,10 +12,10 @@ from pathlib import Path
 from hamster.checkpoint import CheckpointStore, _sha256
 from hamster.session_store import SessionStore
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _make_ckpt(tmp: str) -> CheckpointStore:
     return CheckpointStore(base=Path(tmp) / "checkpoints")
@@ -37,6 +38,7 @@ def _read(root: Path, rel: str) -> str:
 # ---------------------------------------------------------------------------
 # 1. Blob store primitives
 # ---------------------------------------------------------------------------
+
 
 class TestCheckpointBlobs(unittest.TestCase):
     def test_store_and_retrieve_blob(self) -> None:
@@ -70,6 +72,7 @@ class TestCheckpointBlobs(unittest.TestCase):
 # ---------------------------------------------------------------------------
 # 2. Checkpoint creation
 # ---------------------------------------------------------------------------
+
 
 class TestCheckpointCreate(unittest.TestCase):
     def test_create_returns_id(self) -> None:
@@ -118,6 +121,7 @@ class TestCheckpointCreate(unittest.TestCase):
 # ---------------------------------------------------------------------------
 # 3. Checkpoint restore
 # ---------------------------------------------------------------------------
+
 
 class TestCheckpointRestore(unittest.TestCase):
     def test_round_trip_restore(self) -> None:
@@ -196,6 +200,7 @@ class TestCheckpointRestore(unittest.TestCase):
 # 4. Session store checkpoint cross-references
 # ---------------------------------------------------------------------------
 
+
 class TestSessionStoreCheckpoints(unittest.TestCase):
     def _setup(self, tmp: str):
         store = _make_store(tmp)
@@ -250,6 +255,7 @@ class TestSessionStoreCheckpoints(unittest.TestCase):
 # ---------------------------------------------------------------------------
 # 5. Multi-turn restore integration
 # ---------------------------------------------------------------------------
+
 
 class TestMultiTurnRestore(unittest.TestCase):
     def test_three_turn_sequence(self) -> None:

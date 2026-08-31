@@ -11,21 +11,19 @@ Usage::
         result = srv.handle_one_request(timeout=120)
     # result is {"code": "...", "state": "..."} or None on timeout
 """
+
 from __future__ import annotations
 
-import socket
-import socketserver
 import threading
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, HTTPServer
-from typing import Any
-
+from typing import Any, Self
 
 CALLBACK_PORT = 8080
-REDIRECT_URI  = f"http://127.0.0.1:{CALLBACK_PORT}/callback"
+REDIRECT_URI = f"http://127.0.0.1:{CALLBACK_PORT}/callback"
 
 # Minimal success HTML served to the browser after a successful auth callback.
-_SUCCESS_HTML = b"""<!DOCTYPE html>
+_SUCCESS_HTML = rb"""<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
@@ -51,7 +49,7 @@ _SUCCESS_HTML = b"""<!DOCTYPE html>
 </body>
 </html>"""
 
-_ERROR_HTML = b"""<!DOCTYPE html>
+_ERROR_HTML = rb"""<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
@@ -82,14 +80,14 @@ class OAuthCallbackHandler(BaseHTTPRequestHandler):
     Sets ``server.callback_received`` to signal the waiting thread.
     """
 
-    def do_GET(self) -> None:  # noqa: N802 (matches stdlib naming convention)
+    def do_GET(self) -> None:
         parsed = urllib.parse.urlparse(self.path)
         if parsed.path != "/callback":
             self._respond(404, b"Not Found")
             return
 
         params = urllib.parse.parse_qs(parsed.query)
-        code  = params.get("code",  [None])[0]
+        code = params.get("code", [None])[0]
         state = params.get("state", [None])[0]
         error = params.get("error", [None])[0]
 
@@ -128,7 +126,7 @@ class OAuthCallbackHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def log_message(self, *args: Any) -> None:  # noqa: ANN002
+    def log_message(self, *args: Any) -> None:
         """Suppress default access log output."""
 
 
@@ -149,15 +147,15 @@ class SingleRequestHTTPServer(HTTPServer):
     allow_reuse_address = True
 
     def __init__(self, expected_state: str, port: int = CALLBACK_PORT) -> None:
-        self.expected_state:    str                    = expected_state
-        self.callback_result:   dict[str, str] | None = None
-        self.callback_received: threading.Event        = threading.Event()
+        self.expected_state: str = expected_state
+        self.callback_result: dict[str, str] | None = None
+        self.callback_received: threading.Event = threading.Event()
         super().__init__(("127.0.0.1", port), OAuthCallbackHandler)
         self.timeout = 1.0  # Allow handle_request() to unblock periodically
 
     # ---- context manager ----
 
-    def __enter__(self) -> "SingleRequestHTTPServer":
+    def __enter__(self) -> Self:
         return self
 
     def __exit__(self, *_: object) -> None:
@@ -182,6 +180,7 @@ class SingleRequestHTTPServer(HTTPServer):
         Raises:
             RuntimeError: If the callback contained a state mismatch or OAuth error.
         """
+
         def _serve() -> None:
             # Serve requests until the event is set; handle_request uses select
             # internally so this won't block indefinitely.

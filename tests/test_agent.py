@@ -24,7 +24,10 @@ class FakeClient:
                         "function": {
                             "name": "write_file",
                             "arguments": json.dumps(
-                                {"filepath": "index.html", "content": "<!DOCTYPE html>\n"}
+                                {
+                                    "filepath": "index.html",
+                                    "content": "<!DOCTYPE html>\n",
+                                }
                             ),
                         },
                     }
@@ -52,7 +55,10 @@ class TestAgentRendering(unittest.TestCase):
         messages = [{"role": "system", "content": "test"}]
 
         with (
-            patch("hamster.agent.TOOL_FUNCTIONS", {"write_file": lambda **_kwargs: "Wrote index.html."}),
+            patch(
+                "hamster.agent.TOOL_FUNCTIONS",
+                {"write_file": lambda **_kwargs: "Wrote index.html."},
+            ),
             patch("hamster.agent.print_assistant_delta") as mocked_print,
             patch("hamster.agent.render_tool_result"),
         ):

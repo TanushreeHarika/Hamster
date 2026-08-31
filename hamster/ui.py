@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import sys
 from collections.abc import Mapping, Sequence
 
 from rich import box
@@ -10,7 +11,6 @@ from rich.panel import Panel
 from rich.rule import Rule
 from rich.table import Table
 from rich.text import Text
-
 
 console = Console()
 
@@ -76,6 +76,7 @@ HAMSTER_EXIT_LOGO = """
 ⠀⠀⠀⠀⠀⠀⠀⠀⡤⢥⠀⠀⠀⠀⠀⢥⠥⡀⠀⠀⠈⠢⢌⡃⠝⡲⢄⡁⣔⢫⠞⡴⢣⢞⡩⣇⢯⡙⠖⢋⡠⠊⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀
 ⠀⠀⠀⠀⠀⠀⠀⠀⠉⢠⠪⢠⠀⡤⡘⠦⠀⠀⠀⠀⠀⠀⠀⠈⠑⠐⠀⢌⡈⣁⢉⡈⣁⡈⣁⠀⠀⠔⠈⠁⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀"""
 
+
 def clear_screen() -> None:
     os.system("cls" if os.name == "nt" else "clear")
 
@@ -88,7 +89,7 @@ def print_logo() -> None:
             Align.center(logo_text),
             border_style=THEME["primary"],
             padding=(0, 2),
-            subtitle=f"[dim]🐹 Hamster — OpenRouter engineering agent[/dim]",
+            subtitle="[dim]🐹 Hamster — OpenRouter engineering agent[/dim]",
         )
     )
     metrics = Table.grid(padding=(0, 2))
@@ -98,7 +99,14 @@ def print_logo() -> None:
     metrics.add_row("Review", "press v at the save prompt to inspect code")
     metrics.add_row("Mood", "supportive, sharp, tiny bit cheeky")
     metrics.add_row("Search", "ripgrep required · brew install ripgrep")
-    console.print(Panel(metrics, border_style="gold3", title="[bold gold3]Ready[/]", title_align="left"))
+    console.print(
+        Panel(
+            metrics,
+            border_style="gold3",
+            title="[bold gold3]Ready[/]",
+            title_align="left",
+        )
+    )
 
 
 def print_exit_logo() -> None:
@@ -107,9 +115,7 @@ def print_exit_logo() -> None:
     farewell = Text("Bye! 🐹", style="bold gold3")
     console.print(
         Panel(
-            Align.center(
-                Text.assemble(exit_text, Text("\n"), farewell)
-            ),
+            Align.center(Text.assemble(exit_text, Text("\n"), farewell)),
             border_style="gold3",
             title="[bold gold3]See you soon[/]",
             padding=(0, 2),
@@ -118,32 +124,57 @@ def print_exit_logo() -> None:
 
 
 def print_help() -> None:
-    table = Table(title=f"[bold {THEME['primary']}]Hamster Commands[/]", border_style=THEME["secondary"], box=box.ROUNDED)
-    table.add_column("Command", style=f"bold {THEME['secondary']}", no_wrap=True)
+    table = Table(
+        title=f"[bold {THEME['primary']}]Hamster Commands[/]",
+        border_style=THEME["secondary"],
+        box=box.ROUNDED,
+        show_lines=True,
+    )
+    table.add_column(
+        "Command", style=f"bold {THEME['secondary']}", no_wrap=True, min_width=22
+    )
     table.add_column("Action", style="white")
+
+    # ── Core ──────────────────────────────────────────────────────────────
     table.add_row("/help", "Show this command guide")
+    table.add_row("/version", "Show Hamster version, model, and Python info")
+    table.add_row("/clear", "Clear the terminal and redraw the splash")
+    table.add_row("/exit", "Leave Hamster (prints farewell graphic)")
+
+    # ── Workspace ─────────────────────────────────────────────────────────
     table.add_row("/files", "List files in the current draft")
     table.add_row("/search <query>", "Ask Hamster to search technical documentation")
     table.add_row("/pending", "Show pending draft changes")
-    table.add_row("/apply", "Save pending draft changes")
-    table.add_row("/sync", "Refresh draft state")
-    table.add_row("/undo [N]", "Revert workspace N turns (default 1), keeps conversation log")
+    table.add_row("/apply", "Save pending draft changes to disk")
+    table.add_row("/sync", "Refresh draft state from disk")
+    table.add_row(
+        "/undo [N]", "Revert workspace N turns (default 1), keeps conversation log"
+    )
+
+    # ── Configuration ─────────────────────────────────────────────────────
+    table.add_row("/set-key <key>", "Set or rotate the OpenRouter API key in .env")
+
+    # ── Auth ──────────────────────────────────────────────────────────────
     table.add_row("/login", "Log in with Google (OAuth 2.0 PKCE flow)")
     table.add_row("/whoami", "Show the currently logged-in user")
     table.add_row("/logout", "Clear saved Google credentials")
-    table.add_row("/clear", "Clear the terminal and redraw the splash")
-    table.add_row("/exit", "Leave Hamster (prints farewell graphic)")
+
     console.print(table)
     console.print()
+
     tip = Text()
     tip.append("CLI tip: ", style="bold gold3")
+    tip.append("hamster version", style="bold cyan")
+    tip.append("  ·  ", style="dim")
     tip.append("hamster list-sessions", style="bold cyan")
     tip.append("  ·  ", style="dim")
     tip.append("hamster resume <session_id>", style="bold cyan")
     console.print(tip)
 
 
-def print_session_resumed(session_id: str, msg_count: int, working_dir: str = "") -> None:
+def print_session_resumed(
+    session_id: str, msg_count: int, working_dir: str = ""
+) -> None:
     """Print a banner when a saved session is restored."""
     body = Table.grid(padding=(0, 1))
     body.add_column(style="dim")
@@ -151,7 +182,9 @@ def print_session_resumed(session_id: str, msg_count: int, working_dir: str = ""
     body.add_row("Session", f"[bold cyan]{session_id}[/]")
     if working_dir:
         body.add_row("Working dir", working_dir)
-    body.add_row("Messages", f"{msg_count} message{'' if msg_count == 1 else 's'} restored")
+    body.add_row(
+        "Messages", f"{msg_count} message{'' if msg_count == 1 else 's'} restored"
+    )
     console.print(
         Panel(
             body,
@@ -197,7 +230,7 @@ def print_sessions_table(sessions: list[dict]) -> None:
 
     console.print(table)
     console.print(
-        f"  Resume with: [bold cyan]hamster resume <session_id>[/]",
+        "  Resume with: [bold cyan]hamster resume <session_id>[/]",
         style="dim",
     )
 
@@ -232,6 +265,54 @@ def print_undo_result(message: str, success: bool = True) -> None:
         )
 
 
+def print_version(version: str, model: str) -> None:
+    """Render a version information panel.
+
+    Args:
+        version: Package version string (e.g. ``"0.1.0"``).
+        model:   Active OpenRouter model slug.
+    """
+    body = Table.grid(padding=(0, 2))
+    body.add_column(style="dim", no_wrap=True)
+    body.add_column(style="bold white")
+    body.add_row("🐹 Hamster", f"[bold gold3]v{version}[/]")
+    body.add_row("🤖 Model", f"[cyan]{model}[/]")
+    body.add_row("🐍 Python", f"{sys.version.split()[0]}")
+    body.add_row("📦 Package", "hamster-agent")
+    console.print(
+        Panel(
+            body,
+            title="[bold gold3]Hamster — Version Info[/]",
+            border_style=THEME["secondary"],
+            box=box.ROUNDED,
+            padding=(1, 2),
+        )
+    )
+
+
+def print_set_key_success(masked_key: str) -> None:
+    """Render a confirmation panel after an OpenRouter API key update.
+
+    Args:
+        masked_key: Partially masked key string for safe display
+                    (e.g. ``"sk-or-…a1b2"``).
+    """
+    console.print(
+        Panel(
+            Text.assemble(
+                ("🔑  API key updated: ", "bold white"),
+                (masked_key, f"bold {THEME['secondary']}"),
+                ("\n", ""),
+                ("Restart Hamster or start a new task to use the new key.", "dim"),
+            ),
+            title="[bold gold3]Key Updated[/]",
+            border_style=THEME["success"],
+            box=box.ROUNDED,
+            padding=(0, 2),
+        )
+    )
+
+
 def print_login_success(email: str) -> None:
     """Render a success banner after ``hamster login`` completes."""
     console.print(
@@ -258,13 +339,15 @@ def print_whoami(profile: dict) -> None:
     body.add_column(style="dim", no_wrap=True)
     body.add_column(style="white")
     if profile.get("name"):
-        body.add_row("🧪 Name",    profile["name"])
+        body.add_row("🧪 Name", profile["name"])
     if profile.get("email"):
-        body.add_row("📧 Email",   profile["email"])
+        body.add_row("📧 Email", profile["email"])
     if profile.get("sub"):
         body.add_row("🔑 Google ID", profile["sub"])
     if profile.get("picture"):
-        body.add_row("🖼️  Picture",  f"[link={profile['picture']}]{profile['picture']}[/link]")
+        body.add_row(
+            "🖼️  Picture", f"[link={profile['picture']}]{profile['picture']}[/link]"
+        )
     console.print(
         Panel(
             body,
@@ -278,18 +361,20 @@ def print_whoami(profile: dict) -> None:
 
 def render_action_summary(action: str, details: Mapping[str, str]) -> None:
     """Minimal action indicator - suppressed for cleaner UI."""
-    pass
 
 
 def render_files_summary(rows: Sequence[Mapping[str, str]]) -> None:
     """File access indicator - suppressed for cleaner UI."""
-    pass
 
 
 def render_diff(filepath: str, diff_lines: Sequence[str]) -> None:
     # ── Tokenized color diff: additions=green, deletions=red, metadata=cyan ──
-    additions = sum(1 for l in diff_lines if l.startswith("+") and not l.startswith("+++ "))
-    deletions = sum(1 for l in diff_lines if l.startswith("-") and not l.startswith("--- "))
+    additions = sum(
+        1 for l in diff_lines if l.startswith("+") and not l.startswith("+++ ")
+    )
+    deletions = sum(
+        1 for l in diff_lines if l.startswith("-") and not l.startswith("--- ")
+    )
 
     body = Text()
     for line in diff_lines:
@@ -297,7 +382,7 @@ def render_diff(filepath: str, diff_lines: Sequence[str]) -> None:
             body.append(line + "\n", style="bold green")
         elif line.startswith("-") and not line.startswith("--- "):
             body.append(line + "\n", style="bold red")
-        elif line.startswith("@@") or line.startswith("--- ") or line.startswith("+++ "):
+        elif line.startswith(("@@", "--- ", "+++ ")):
             # Boundary / hunk headers and file paths rendered in cyan
             body.append(line + "\n", style="bold cyan")
         else:
@@ -323,11 +408,15 @@ def render_diff(filepath: str, diff_lines: Sequence[str]) -> None:
 
 
 def render_security_violation(message: str) -> None:
-    console.print(Panel(message, title="Security Violation", border_style="bold red", style="red"))
+    console.print(
+        Panel(message, title="Security Violation", border_style="bold red", style="red")
+    )
 
 
 def request_save_changes(changes: list[str], diff_lines: list[str]) -> str:
-    body = "\n".join(["I drafted the changes. Looking good from here.", "", *changes[:20]])
+    body = "\n".join(
+        ["I drafted the changes. Looking good from here.", "", *changes[:20]]
+    )
     if len(changes) > 20:
         body += f"\n... and {len(changes) - 20} more"
     body += "\n\nSave everything, discard everything, or peek at the diff first."
@@ -359,10 +448,14 @@ def request_save_changes(changes: list[str], diff_lines: list[str]) -> str:
 
     _render_panel()
     while True:
-        answer = prompt_user(
-            f"[bold {THEME['primary']}]Choice[/] "
-            f"[green]a[/]/[red]r[/]/[yellow]v[/] ([dim]r[/]): "
-        ).strip().lower()
+        answer = (
+            prompt_user(
+                f"[bold {THEME['primary']}]Choice[/] "
+                f"[green]a[/]/[red]r[/]/[yellow]v[/] ([dim]r[/]): "
+            )
+            .strip()
+            .lower()
+        )
         if answer in {"a", "accept", "accept all", "y", "yes"}:
             return "accept"
         if answer in {"r", "reject", "reject all", "n", "no", ""}:
@@ -371,7 +464,7 @@ def request_save_changes(changes: list[str], diff_lines: list[str]) -> str:
             render_diff("Draft changes", diff_lines)
             # After showing the diff just re-ask inline — no full panel repeat
             console.print(
-                f"[dim]a save all · r discard all[/dim]",
+                "[dim]a save all · r discard all[/dim]",
                 justify="right",
             )
             continue
@@ -384,7 +477,12 @@ def render_tool_result(name: str, content: str) -> None:
     if name == "read_file" and content and not content.startswith("ERROR:"):
         return
     # Skip for search_codebase with results (agent already sees results)
-    if name == "search_codebase" and content and content != "No matches." and not content.startswith("Denied"):
+    if (
+        name == "search_codebase"
+        and content
+        and content != "No matches."
+        and not content.startswith("Denied")
+    ):
         return
     # Skip for denied/successful quiet operations
     if content in ("Denied.", "User denied."):
@@ -395,9 +493,15 @@ def render_tool_result(name: str, content: str) -> None:
         return
     # Minimal render for errors and other status messages
     if content.startswith("ERROR:"):
-        console.print(Panel(content, border_style=THEME["danger"], title="⚠️  Tool Error"))
-    elif content.startswith("Denied") or content.startswith("User denied"):
-        console.print(Panel(f"🐹 {content}", border_style=THEME["warning"], title="Hamster Notice"))
+        console.print(
+            Panel(content, border_style=THEME["danger"], title="⚠️  Tool Error")
+        )
+    elif content.startswith(("Denied", "User denied")):
+        console.print(
+            Panel(
+                f"🐹 {content}", border_style=THEME["warning"], title="Hamster Notice"
+            )
+        )
 
 
 def render_model_error(message: str) -> None:
@@ -437,9 +541,13 @@ def sandbox_status(message: str):
 
 def confirm(prompt: str) -> bool:
     while True:
-        answer = prompt_user(
-            f"[bold {THEME['primary']}] {prompt} [/][green](y)[/]/[red](n)[/] : "
-        ).strip().lower()
+        answer = (
+            prompt_user(
+                f"[bold {THEME['primary']}] {prompt} [/][green](y)[/]/[red](n)[/] : "
+            )
+            .strip()
+            .lower()
+        )
         if answer in {"y", "yes"}:
             return True
         if answer in {"n", "no"}:

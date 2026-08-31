@@ -4,11 +4,12 @@ Provides an extensible `RuntimeOrchestrator` interface with simple stubs for
 native and container execution drivers. These are placeholders that define the
 expected surface area for launching sandboxed processes.
 """
+
 from __future__ import annotations
 
 import platform
 from dataclasses import dataclass
-from typing import Dict, Any
+from typing import Any
 
 
 @dataclass
@@ -16,7 +17,7 @@ class ExecutionResult:
     exit_code: int
     stdout: str
     stderr: str
-    meta: Dict[str, Any] | None = None
+    meta: dict[str, Any] | None = None
 
 
 class RuntimeOrchestrator:

@@ -39,14 +39,15 @@ Public API
     row   = store.get_session(sid)                 # dict | None
     store.delete_session(sid)                      # hard-delete session + messages
 """
+
 from __future__ import annotations
 
 import json
 import sqlite3
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Self
 
 # Default DB path — created in the user's home directory under ~/.hamster/
 DEFAULT_DB_PATH: Path = Path.home() / ".hamster" / "sessions.db"
@@ -54,7 +55,7 @@ DEFAULT_DB_PATH: Path = Path.home() / ".hamster" / "sessions.db"
 
 def _now_iso() -> str:
     """Return the current UTC time as an ISO-8601 string (no microseconds)."""
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 class SessionStore:
@@ -188,9 +189,7 @@ class SessionStore:
 
     def delete_session(self, session_id: str) -> None:
         """Hard-delete a session and all its messages (cascades via FK)."""
-        self._conn.execute(
-            "DELETE FROM sessions WHERE session_id = ?", (session_id,)
-        )
+        self._conn.execute("DELETE FROM sessions WHERE session_id = ?", (session_id,))
         self._conn.commit()
 
     # ------------------------------------------------------------------
@@ -238,9 +237,7 @@ class SessionStore:
         """
         now = _now_iso()
         # Clear existing rows for this session before re-inserting
-        self._conn.execute(
-            "DELETE FROM messages WHERE session_id = ?", (session_id,)
-        )
+        self._conn.execute("DELETE FROM messages WHERE session_id = ?", (session_id,))
         rows = []
         for msg in messages:
             role = msg.get("role", "")
@@ -310,7 +307,7 @@ class SessionStore:
         """Close the underlying database connection."""
         try:
             self._conn.close()
-        except Exception:
+        except sqlite3.Error:
             pass
 
     # ------------------------------------------------------------------
@@ -340,9 +337,7 @@ class SessionStore:
         )
         self._conn.commit()
 
-    def list_checkpoints_for_session(
-        self, session_id: str
-    ) -> list[dict[str, Any]]:
+    def list_checkpoints_for_session(self, session_id: str) -> list[dict[str, Any]]:
         """Return all checkpoints for *session_id* ordered by turn_index descending.
 
         The most recent checkpoint (highest turn_index) is first.
@@ -388,7 +383,7 @@ class SessionStore:
             return None
         return rows[turn_offset - 1]["checkpoint_id"]
 
-    def __enter__(self) -> "SessionStore":
+    def __enter__(self) -> Self:
         return self
 
     def __exit__(self, *_: object) -> None:

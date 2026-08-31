@@ -6,17 +6,19 @@ and tests can call the sandbox control plane without a network layer.
 The implementations are intentionally small and blocking; they should be
 replaced with an actual gRPC/IPC server in a later iteration.
 """
+
 from __future__ import annotations
 
 import secrets
+from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import Any, Dict, Iterable, Optional
+from typing import Any
 
-from src.transactions import rollback_snapshot, snapshot_files, FileSnapshot as TxFileSnapshot
-
-import hamster.tools as tools
-from hamster.policy import CommandASTAnalyzer, SecurityPolicyEngine
+from hamster import tools
 from hamster.consent import ConsentBroker
+from hamster.policy import CommandASTAnalyzer, SecurityPolicyEngine
+from src.transactions import FileSnapshot as TxFileSnapshot
+from src.transactions import rollback_snapshot, snapshot_files
 
 
 @dataclass
@@ -32,14 +34,14 @@ class Session:
 
 class SessionManager:
     def __init__(self) -> None:
-        self._sessions: Dict[str, Session] = {}
+        self._sessions: dict[str, Session] = {}
 
     def create_session(self, subject: str = "agent") -> str:
         sid = secrets.token_hex(8)
         self._sessions[sid] = Session(session_id=sid, subject=subject)
         return sid
 
-    def get_session(self, session_id: str) -> Optional[Session]:
+    def get_session(self, session_id: str) -> Session | None:
         return self._sessions.get(session_id)
 
     def approve_scope(self, session_id: str, scope: str) -> bool:
@@ -61,14 +63,17 @@ class RPCGateway:
         return self.sessions.create_session(subject)
 
     # ---- Command execution
-    def execute_command(self, session_id: str, command: str) -> Dict[str, Any]:
+    def execute_command(self, session_id: str, command: str) -> dict[str, Any]:
         session = self.sessions.get_session(session_id)
         if session is None:
             return {"error": "invalid session"}
 
         analysis = CommandASTAnalyzer.analyze(command)
         if analysis.get("violations"):
-            return {"policy_decision": "DENIED", "violations": analysis.get("violations")}
+            return {
+                "policy_decision": "DENIED",
+                "violations": analysis.get("violations"),
+            }
 
         # If suspicious, check if the primary binary is pre-approved for this subject
         if analysis.get("suspects"):
@@ -84,7 +89,12 @@ class RPCGateway:
                 else:
                     # create a consent request for human approval
                     cid = self.consent.create_request(session.session_id, command)
-                    return {"policy_decision": "CONSENT_PENDING", "consent_id": cid, "suspects": analysis.get("suspects"), "notes": analysis.get("notes", [])}
+                    return {
+                        "policy_decision": "CONSENT_PENDING",
+                        "consent_id": cid,
+                        "suspects": analysis.get("suspects"),
+                        "notes": analysis.get("notes", []),
+                    }
 
         # Basic policy check placeholder — real policy checks go here
         pd = self.policy.check(session.subject, "exec")
@@ -95,12 +105,12 @@ class RPCGateway:
         out = tools.run_sandbox_command(command)
         return {"policy_decision": "ALLOWED_AUTO", "output": out}
 
-    def spawn_pty(self, session_id: str, pty_spec: Dict[str, Any]) -> Dict[str, Any]:
+    def spawn_pty(self, session_id: str, pty_spec: dict[str, Any]) -> dict[str, Any]:
         # PTY streaming interfaces are out of scope for this skeleton.
         return {"error": "spawn_pty not implemented in RPC skeleton"}
 
     # ---- File operations
-    def read_file(self, session_id: str, filepath: str) -> Dict[str, Any]:
+    def read_file(self, session_id: str, filepath: str) -> dict[str, Any]:
         session = self.sessions.get_session(session_id)
         if session is None:
             return {"error": "invalid session"}
@@ -110,7 +120,9 @@ class RPCGateway:
         data = tools.read_file(filepath)
         return {"data": data}
 
-    def write_file(self, session_id: str, filepath: str, content: str) -> Dict[str, Any]:
+    def write_file(
+        self, session_id: str, filepath: str, content: str
+    ) -> dict[str, Any]:
         session = self.sessions.get_session(session_id)
         if session is None:
             return {"error": "invalid session"}
@@ -118,7 +130,9 @@ class RPCGateway:
         return {"result": res}
 
     # ---- Snapshot / restore
-    def create_checkpoint(self, session_id: str, targets: Iterable[str]) -> Dict[str, Any]:
+    def create_checkpoint(
+        self, session_id: str, targets: Iterable[str]
+    ) -> dict[str, Any]:
         # Use src.transactions.snapshot_files to capture current state
         snap = snapshot_files(targets)
         # Return a serializable snapshot (caller can persist externally)
@@ -128,15 +142,21 @@ class RPCGateway:
         }
         return {"snapshot": serializable}
 
-    def restore_checkpoint(self, session_id: str, snapshot: Dict[str, Any]) -> Dict[str, Any]:
+    def restore_checkpoint(
+        self, session_id: str, snapshot: dict[str, Any]
+    ) -> dict[str, Any]:
         # Reconstruct FileSnapshot objects and rollback
         reconstructed: dict[str, TxFileSnapshot] = {}
         for k, v in snapshot.items():
-            reconstructed[k] = TxFileSnapshot(path=v["path"], original_text=v["original_text"], exists=v["exists"])  # type: ignore[arg-type]
+            reconstructed[k] = TxFileSnapshot(
+                path=v["path"], original_text=v["original_text"], exists=v["exists"]
+            )  # type: ignore[arg-type]
         res = rollback_snapshot(reconstructed)
         return {"restored": res}
 
-    def get_diff(self, session_id: str, path_a: str | None = None, path_b: str | None = None) -> Dict[str, Any]:
+    def get_diff(
+        self, session_id: str, path_a: str | None = None, path_b: str | None = None
+    ) -> dict[str, Any]:
         # Minimal listing-based diff: return sandbox file listing for now
         listing = tools.list_sandbox_files()
         return {"files": listing}

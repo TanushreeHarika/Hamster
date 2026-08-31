@@ -17,6 +17,7 @@ Provides two layers of language-server access:
 Both layers share the same :class:`Diagnostic` dataclass as the public result
 type so callers need not care which path is taken.
 """
+
 from __future__ import annotations
 
 import json
@@ -29,10 +30,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-
 # ---------------------------------------------------------------------------
 # Public result type
 # ---------------------------------------------------------------------------
+
 
 @dataclass
 class Diagnostic:
@@ -46,6 +47,7 @@ class Diagnostic:
 # ---------------------------------------------------------------------------
 # Persistent JSON-RPC LSP daemon
 # ---------------------------------------------------------------------------
+
 
 class LSPDaemon:
     """Persistent JSON-RPC 2.0 LSP server process manager.
@@ -139,10 +141,10 @@ class LSPDaemon:
             try:
                 proc.terminate()
                 proc.wait(timeout=3)
-            except Exception:
+            except (OSError, subprocess.SubprocessError):
                 try:
                     proc.kill()
-                except Exception:
+                except OSError:
                     pass
         self._proc = None
 
@@ -184,7 +186,7 @@ class LSPDaemon:
                         except queue.Full:
                             pass
                 # Notifications (no ``id`` field) are silently discarded
-            except Exception:
+            except (OSError, ValueError, TypeError):
                 break
 
         # Unblock all waiters on connection loss
@@ -373,6 +375,7 @@ def _get_daemon(server_name: str = "pyright-langserver") -> LSPDaemon | None:
 # Original lightweight bridge (subprocess-per-call fallback)
 # ---------------------------------------------------------------------------
 
+
 class LSPBridge:
     """Utility hook for optional local language-server inspection.
 
@@ -405,7 +408,9 @@ class LSPBridge:
         target = Path(filepath).resolve()
         command = [self.server_path, "--outputjson", str(target)]
         try:
-            completed = subprocess.run(command, capture_output=True, text=True, check=False)
+            completed = subprocess.run(
+                command, capture_output=True, text=True, check=False
+            )
         except OSError:
             return []
 
@@ -423,8 +428,12 @@ class LSPBridge:
             diagnostics.append(
                 Diagnostic(
                     path=str(entry.get("file", filepath)),
-                    line=int(entry.get("range", {}).get("start", {}).get("line", 0)) + 1,
-                    column=int(entry.get("range", {}).get("start", {}).get("character", 0)) + 1,
+                    line=int(entry.get("range", {}).get("start", {}).get("line", 0))
+                    + 1,
+                    column=int(
+                        entry.get("range", {}).get("start", {}).get("character", 0)
+                    )
+                    + 1,
                     message=str(entry.get("message", "")),
                     severity=str(entry.get("severity", "warning")).lower(),
                 )
@@ -445,7 +454,8 @@ class LSPBridge:
         """
         # --- 1. AST index (Tree-sitter or regex backend) -----------------
         try:
-            from src.ast_index import ASTIndex   # type: ignore[import]
+            from src.ast_index import ASTIndex  # type: ignore[import]
+
             index = ASTIndex.from_file(filepath)
             defs = index.definitions(symbol)
             if defs:
@@ -458,12 +468,14 @@ class LSPBridge:
                             "line": d.line,
                             "column": d.column,
                             "kind": d.kind,
-                            "docstring": (d.docstring[:200] + "…") if len(d.docstring) > 200 else d.docstring,
+                            "docstring": (d.docstring[:200] + "…")
+                            if len(d.docstring) > 200
+                            else d.docstring,
                         }
                         for d in defs
                     ],
                 }
-        except Exception:
+        except (ImportError, OSError, ValueError, TypeError):
             pass
 
         # --- 2. Keyword-scan fallback (original behaviour) ---------------
@@ -472,7 +484,13 @@ class LSPBridge:
         matches: list[dict[str, Any]] = []
         for line_number, line in enumerate(text.splitlines(), start=1):
             if f"def {symbol}" in line or f"class {symbol}" in line:
-                matches.append({"line": line_number, "column": line.find(symbol) + 1, "kind": "unknown"})
+                matches.append(
+                    {
+                        "line": line_number,
+                        "column": line.find(symbol) + 1,
+                        "kind": "unknown",
+                    }
+                )
 
         if matches:
             return {
@@ -506,7 +524,13 @@ class LSPBridge:
             if "error" in remainder.lower():
                 severity = "error"
             diagnostics.append(
-                Diagnostic(path=path, line=max(1, line_no), column=1, message=remainder, severity=severity)
+                Diagnostic(
+                    path=path,
+                    line=max(1, line_no),
+                    column=1,
+                    message=remainder,
+                    severity=severity,
+                )
             )
         return diagnostics
 
@@ -514,6 +538,7 @@ class LSPBridge:
 # ---------------------------------------------------------------------------
 # Public module-level helpers
 # ---------------------------------------------------------------------------
+
 
 def parse_local_diagnostics(filepath: str) -> list[Diagnostic]:
     return LSPBridge().diagnostics(filepath)

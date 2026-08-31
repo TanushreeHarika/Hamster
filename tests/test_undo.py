@@ -7,6 +7,7 @@ Key invariants verified:
   directly, also never going through the shell runner.
 - Neither path raises a SECURITY VIOLATION for patterns like ``rm <file>``.
 """
+
 from __future__ import annotations
 
 import tempfile
@@ -16,10 +17,10 @@ from unittest.mock import MagicMock, patch
 
 from hamster.checkpoint import CheckpointStore
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _make_ckpt(tmp: str) -> CheckpointStore:
     return CheckpointStore(base=Path(tmp) / "checkpoints")
@@ -36,17 +37,21 @@ def _write(root: Path, rel: str, content: str = "content") -> Path:
 # 1. delete_file tool — no shell invocation
 # ---------------------------------------------------------------------------
 
+
 class TestDeleteFileTool(unittest.TestCase):
     """delete_file() must use Python filesystem ops, never shell commands."""
 
     def _make_sandbox(self, workspace: Path):
         """Return a minimal TempSandbox-like mock for injecting into tools._sandbox."""
+
         class DummySandbox:
             def __init__(self, ws: Path):
                 self.workspace = ws.resolve()
                 self.project_root = ws.resolve()
+
             def assert_alive(self):
                 pass
+
             def new_path(self, p: str) -> Path:
                 return self.workspace / p
 
@@ -70,10 +75,13 @@ class TestDeleteFileTool(unittest.TestCase):
                 patch("hamster.tools.validate_terminal_command") as mock_validate,
             ):
                 from hamster.tools import delete_file
+
                 result = delete_file("login.html")
 
             # File is gone
-            self.assertFalse(target.exists(), f"Expected login.html to be deleted, got: {result}")
+            self.assertFalse(
+                target.exists(), f"Expected login.html to be deleted, got: {result}"
+            )
             self.assertIn("Deleted", result)
             # Shell security validator was never invoked
             mock_validate.assert_not_called()
@@ -90,6 +98,7 @@ class TestDeleteFileTool(unittest.TestCase):
                 patch("hamster.tools._session_state", MagicMock()),
             ):
                 from hamster.tools import delete_file
+
                 result = delete_file("nonexistent.txt")
 
             self.assertIn("not found", result.lower())
@@ -107,6 +116,7 @@ class TestDeleteFileTool(unittest.TestCase):
                 patch("hamster.tools._session_state", MagicMock()),
             ):
                 from hamster.tools import delete_file
+
                 result = delete_file("subdir")
 
             self.assertIn("directory", result.lower())
@@ -124,6 +134,7 @@ class TestDeleteFileTool(unittest.TestCase):
                 patch("hamster.tools._session_state", MagicMock()),
             ):
                 from hamster.tools import delete_file
+
                 result = delete_file("../../etc/passwd")
 
             self.assertIn("SECURITY", result)
@@ -141,6 +152,7 @@ class TestDeleteFileTool(unittest.TestCase):
                 patch("hamster.tools._session_state", MagicMock()),
             ):
                 from hamster.tools import delete_file
+
                 delete_file("deep/nested/file.txt")
 
             # File and its now-empty ancestors should be removed
@@ -151,6 +163,7 @@ class TestDeleteFileTool(unittest.TestCase):
 # ---------------------------------------------------------------------------
 # 2. restore_checkpoint — no shell invocation
 # ---------------------------------------------------------------------------
+
 
 class TestRestoreCheckpointNoShell(unittest.TestCase):
     """restore_checkpoint() must never call validate_terminal_command."""
@@ -174,7 +187,9 @@ class TestRestoreCheckpointNoShell(unittest.TestCase):
                 result = store.restore_checkpoint(ckpt_id, workspace)
 
             # File must be gone
-            self.assertFalse(extra.exists(), "login.html should have been removed by restore")
+            self.assertFalse(
+                extra.exists(), "login.html should have been removed by restore"
+            )
             self.assertEqual(result["removed"], 1)
             # Shell validator was never touched
             mock_validate.assert_not_called()
@@ -206,6 +221,7 @@ class TestRestoreCheckpointNoShell(unittest.TestCase):
 # 3. No SECURITY VIOLATION string emitted during undo flow
 # ---------------------------------------------------------------------------
 
+
 class TestNoSecurityViolationDuringUndo(unittest.TestCase):
     """End-to-end: undo flow must never produce a SECURITY VIOLATION string."""
 
@@ -217,14 +233,15 @@ class TestNoSecurityViolationDuringUndo(unittest.TestCase):
             workspace.mkdir()
 
             # State before agent turn: empty workspace
-            ckpt_id = store.create_checkpoint(workspace, session_id="sess", turn_index=0)
+            ckpt_id = store.create_checkpoint(
+                workspace, session_id="sess", turn_index=0
+            )
 
             # Agent adds a file (simulated)
             _write(workspace, "login.html", "<html>login</html>")
 
             # /undo: restore to empty
             security_violations: list[str] = []
-            original_violation = None
 
             # Intercept render_security_violation to catch any accidental security hits
             with patch("hamster.tools.render_security_violation") as mock_render:

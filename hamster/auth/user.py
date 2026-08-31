@@ -10,6 +10,7 @@ Usage::
     profile = get_profile(token_data)
     print(profile.email, profile.name)
 """
+
 from __future__ import annotations
 
 import base64
@@ -17,13 +18,13 @@ import json
 from dataclasses import dataclass, field
 from typing import Any
 
-
 GOOGLE_USERINFO_URL = "https://www.googleapis.com/oauth2/v3/userinfo"
 
 
 # ---------------------------------------------------------------------------
 # Data model
 # ---------------------------------------------------------------------------
+
 
 @dataclass
 class UserProfile:
@@ -36,11 +37,12 @@ class UserProfile:
         sub:     Unique Google account identifier (stable across sessions).
         raw:     Original claims dict for forward-compatibility.
     """
-    email:   str               = ""
-    name:    str               = ""
-    picture: str               = ""
-    sub:     str               = ""
-    raw:     dict[str, Any]    = field(default_factory=dict, repr=False)
+
+    email: str = ""
+    name: str = ""
+    picture: str = ""
+    sub: str = ""
+    raw: dict[str, Any] = field(default_factory=dict, repr=False)
 
     def is_complete(self) -> bool:
         """Return ``True`` if all required display fields are populated."""
@@ -50,6 +52,7 @@ class UserProfile:
 # ---------------------------------------------------------------------------
 # JWT payload decoder
 # ---------------------------------------------------------------------------
+
 
 def decode_id_token_payload(id_token: str) -> dict[str, Any]:
     """Decode the payload segment of a JWT without verifying its signature.
@@ -70,8 +73,7 @@ def decode_id_token_payload(id_token: str) -> dict[str, Any]:
     parts = id_token.split(".")
     if len(parts) != 3:
         raise ValueError(
-            f"id_token does not look like a JWT: expected 3 segments, "
-            f"got {len(parts)}"
+            f"id_token does not look like a JWT: expected 3 segments, got {len(parts)}"
         )
     payload_b64 = parts[1]
     # Add padding so that base64 decodes correctly (length must be multiple of 4)
@@ -85,6 +87,7 @@ def decode_id_token_payload(id_token: str) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 # Profile builder
 # ---------------------------------------------------------------------------
+
 
 def _profile_from_claims(claims: dict[str, Any]) -> UserProfile:
     """Build a ``UserProfile`` from a Google claims dict."""

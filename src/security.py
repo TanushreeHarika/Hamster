@@ -22,9 +22,12 @@ def canonicalize_path(filepath: str, *, root: str = "./sandbox") -> str:
         candidate = os.path.realpath(filepath)
     else:
         trimmed = filepath.strip()
-        if trimmed == "" or trimmed in {".", "./", "."}:
+        if trimmed == "" or trimmed in {".", "./"}:
             candidate = root_path
-        elif trimmed.startswith("./sandbox/") or trimmed.startswith("sandbox/") or trimmed == "sandbox" or trimmed == "./sandbox":
+        elif (
+            trimmed.startswith(("./sandbox/", "sandbox/", "./sandbox"))
+            or trimmed == "sandbox"
+        ):
             candidate = os.path.realpath(trimmed)
         else:
             candidate = os.path.realpath(os.path.join(root_path, trimmed))

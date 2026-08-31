@@ -3,6 +3,7 @@
 Each test uses a temporary directory for the SQLite database so it never
 touches the user's real ~/.hamster/sessions.db and leaves no artifacts behind.
 """
+
 from __future__ import annotations
 
 import tempfile
@@ -226,7 +227,10 @@ class TestMessagePersistence(unittest.TestCase):
             conversation = [
                 {"role": "system", "content": "You are Hamster."},
                 {"role": "user", "content": "Refactor utils.py"},
-                {"role": "assistant", "content": "Sure, I'll start by reading the file."},
+                {
+                    "role": "assistant",
+                    "content": "Sure, I'll start by reading the file.",
+                },
                 {"role": "user", "content": "Looks good, apply it."},
                 {"role": "assistant", "content": "Done!"},
             ]

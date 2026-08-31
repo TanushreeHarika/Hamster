@@ -33,6 +33,7 @@ This module is **Linux-only**.  All functions raise or return early on
 other platforms; the caller in ``hamster/runtime.py`` guards with a
 ``platform.system()`` check.
 """
+
 from __future__ import annotations
 
 import ctypes
@@ -45,14 +46,15 @@ import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 
-
 # ---------------------------------------------------------------------------
 # Public result type
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class NativeSandboxResult:
     """Result from :func:`run_with_full_isolation`."""
+
     returncode: int
     stdout: str
     stderr: str
@@ -63,6 +65,7 @@ class NativeSandboxResult:
 # ---------------------------------------------------------------------------
 # Layer 1: Namespace isolation via unshare(1)
 # ---------------------------------------------------------------------------
+
 
 def _find_unshare() -> str | None:
     """Return the path to the ``unshare`` binary, or ``None`` if not found."""
@@ -103,7 +106,9 @@ def run_in_namespaces(
                     preexec_fn=preexec_fn,  # type: ignore[arg-type]
                     check=False,
                 )
-                applied = [a.lstrip("-") for a in ns_args if a.startswith("--") and a != "--"]
+                applied = [
+                    a.lstrip("-") for a in ns_args if a.startswith("--") and a != "--"
+                ]
                 return proc, [f"unshare({','.join(applied)})"]
             except (PermissionError, OSError):
                 continue
@@ -190,31 +195,32 @@ def cleanup_cgroup_v2(cgroup_path: Path | None) -> None:
 _AUDIT_ARCH_X86_64: int = 0xC000_003E
 
 # BPF instruction-class constants (from <linux/bpf_common.h>)
-_BPF_LD  = 0x00   # load
-_BPF_W   = 0x00   # 32-bit word
-_BPF_ABS = 0x20   # absolute offset
-_BPF_JMP = 0x05   # jump
-_BPF_JEQ = 0x10   # jump if equal
-_BPF_K   = 0x00   # constant operand
-_BPF_RET = 0x06   # return
+_BPF_LD = 0x00  # load
+_BPF_W = 0x00  # 32-bit word
+_BPF_ABS = 0x20  # absolute offset
+_BPF_JMP = 0x05  # jump
+_BPF_JEQ = 0x10  # jump if equal
+_BPF_K = 0x00  # constant operand
+_BPF_RET = 0x06  # return
 
 # seccomp return values
-_RET_ALLOW = 0x7FFF_0000           # SECCOMP_RET_ALLOW
-_RET_ERRNO = 0x0005_0000 | 1      # SECCOMP_RET_ERRNO | EPERM
+_RET_ALLOW = 0x7FFF_0000  # SECCOMP_RET_ALLOW
+_RET_ERRNO = 0x0005_0000 | 1  # SECCOMP_RET_ERRNO | EPERM
 
 # prctl constants
 _PR_SET_NO_NEW_PRIVS = 38
-_PR_SET_SECCOMP      = 22
+_PR_SET_SECCOMP = 22
 _SECCOMP_MODE_FILTER = 2
 
 
 class _SockFilter(ctypes.Structure):
     """One 8-byte BPF filter instruction (``struct sock_filter``)."""
+
     _fields_ = [
         ("code", ctypes.c_uint16),
-        ("jt",   ctypes.c_uint8),
-        ("jf",   ctypes.c_uint8),
-        ("k",    ctypes.c_uint32),
+        ("jt", ctypes.c_uint8),
+        ("jf", ctypes.c_uint8),
+        ("k", ctypes.c_uint32),
     ]
 
 
@@ -223,8 +229,9 @@ class _SockFProg(ctypes.Structure):
 
     Passed directly to ``prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, …)``.
     """
+
     _fields_ = [
-        ("len",    ctypes.c_uint16),
+        ("len", ctypes.c_uint16),
         ("filter", ctypes.POINTER(_SockFilter)),
     ]
 
@@ -240,22 +247,24 @@ def _jump(code: int, k: int, jt: int, jf: int) -> _SockFilter:
 # Syscall numbers to BLOCK on x86-64.  Deny-list approach:  everything not
 # listed is allowed, so Python / git / npm / pytest are unaffected.
 # Only operations with no legitimate use inside a sandboxed task appear here.
-BLOCKED_SYSCALLS_X86_64: frozenset[int] = frozenset({
-    101,  # ptrace           — trace / inspect other processes
-    155,  # pivot_root       — swap the root filesystem
-    163,  # acct             — enable kernel process accounting
-    164,  # settimeofday     — modify the system clock
-    165,  # mount            — mount filesystems
-    166,  # umount2          — unmount filesystems
-    167,  # swapon           — enable swap device
-    168,  # swapoff          — disable swap device
-    169,  # reboot           — reboot / power off / halt
-    175,  # init_module      — load a kernel module (insmod)
-    176,  # delete_module    — unload a kernel module (rmmod)
-    313,  # finit_module     — load kernel module from fd (modern insmod)
-    317,  # seccomp          — prevent removal / replacement of our filter
-    320,  # kexec_file_load  — replace the running kernel
-})
+BLOCKED_SYSCALLS_X86_64: frozenset[int] = frozenset(
+    {
+        101,  # ptrace           — trace / inspect other processes
+        155,  # pivot_root       — swap the root filesystem
+        163,  # acct             — enable kernel process accounting
+        164,  # settimeofday     — modify the system clock
+        165,  # mount            — mount filesystems
+        166,  # umount2          — unmount filesystems
+        167,  # swapon           — enable swap device
+        168,  # swapoff          — disable swap device
+        169,  # reboot           — reboot / power off / halt
+        175,  # init_module      — load a kernel module (insmod)
+        176,  # delete_module    — unload a kernel module (rmmod)
+        313,  # finit_module     — load kernel module from fd (modern insmod)
+        317,  # seccomp          — prevent removal / replacement of our filter
+        320,  # kexec_file_load  — replace the running kernel
+    }
+)
 
 
 def _build_deny_filter(blocked: frozenset[int]) -> list[_SockFilter]:
@@ -271,17 +280,21 @@ def _build_deny_filter(blocked: frozenset[int]) -> list[_SockFilter]:
     insns: list[_SockFilter] = []
 
     # 1. Architecture guard
-    insns.append(_stmt(_BPF_LD | _BPF_W | _BPF_ABS, 4))                               # load arch (offset 4)
-    insns.append(_jump(_BPF_JMP | _BPF_JEQ | _BPF_K, _AUDIT_ARCH_X86_64, 1, 0))       # if x86-64 → skip deny
-    insns.append(_stmt(_BPF_RET | _BPF_K, _RET_ERRNO))                                # deny unknown arch
+    insns.append(_stmt(_BPF_LD | _BPF_W | _BPF_ABS, 4))  # load arch (offset 4)
+    insns.append(
+        _jump(_BPF_JMP | _BPF_JEQ | _BPF_K, _AUDIT_ARCH_X86_64, 1, 0)
+    )  # if x86-64 → skip deny
+    insns.append(_stmt(_BPF_RET | _BPF_K, _RET_ERRNO))  # deny unknown arch
 
     # 2. Load syscall number (offset 0)
     insns.append(_stmt(_BPF_LD | _BPF_W | _BPF_ABS, 0))
 
     # 3. Per-syscall deny entries
     for nr in sorted(blocked):
-        insns.append(_jump(_BPF_JMP | _BPF_JEQ | _BPF_K, nr, 0, 1))  # if nr==N skip next
-        insns.append(_stmt(_BPF_RET | _BPF_K, _RET_ERRNO))            # deny
+        insns.append(
+            _jump(_BPF_JMP | _BPF_JEQ | _BPF_K, nr, 0, 1)
+        )  # if nr==N skip next
+        insns.append(_stmt(_BPF_RET | _BPF_K, _RET_ERRNO))  # deny
 
     # 4. Default allow
     insns.append(_stmt(_BPF_RET | _BPF_K, _RET_ALLOW))
@@ -340,6 +353,7 @@ def apply_seccomp_deny_list(blocked: frozenset[int] = BLOCKED_SYSCALLS_X86_64) -
 # Combined public entry point
 # ---------------------------------------------------------------------------
 
+
 def run_with_full_isolation(
     command: str,
     *,
@@ -378,7 +392,9 @@ def run_with_full_isolation(
 
     # --- Layer 1: namespace isolation ---
     try:
-        proc, ns_layers = run_in_namespaces(command, timeout=timeout, preexec_fn=_preexec)
+        proc, ns_layers = run_in_namespaces(
+            command, timeout=timeout, preexec_fn=_preexec
+        )
         layers.extend(ns_layers)
         if not ns_layers:
             layers.append("seccomp_only")  # seccomp still applied via preexec_fn
@@ -390,7 +406,7 @@ def run_with_full_isolation(
             stderr=f"Command timed out after {timeout}s.",
             isolation_layers=layers,
         )
-    except Exception as exc:
+    except (OSError, subprocess.SubprocessError, ValueError) as exc:
         cleanup_cgroup_v2(cgroup_path)
         return NativeSandboxResult(
             returncode=1,

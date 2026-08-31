@@ -4,11 +4,11 @@ Provides a small in-process consent broker that records pending approval
 requests and allows programmatic approval/denial. This is a stand-in for the
 Async Consent Broker described in the architecture notes.
 """
+
 from __future__ import annotations
 
 import secrets
 from dataclasses import dataclass
-from typing import Dict, Optional
 
 
 @dataclass
@@ -22,18 +22,20 @@ class ConsentRequest:
 
 class ConsentBroker:
     def __init__(self) -> None:
-        self._requests: Dict[str, ConsentRequest] = {}
+        self._requests: dict[str, ConsentRequest] = {}
 
     def create_request(self, session_id: str, command: str) -> str:
         rid = secrets.token_hex(8)
-        req = ConsentRequest(request_id=rid, session_id=session_id, command=command, status="pending")
+        req = ConsentRequest(
+            request_id=rid, session_id=session_id, command=command, status="pending"
+        )
         self._requests[rid] = req
         return rid
 
-    def get_request(self, request_id: str) -> Optional[ConsentRequest]:
+    def get_request(self, request_id: str) -> ConsentRequest | None:
         return self._requests.get(request_id)
 
-    def find_request(self, session_id: str, command: str) -> Optional[ConsentRequest]:
+    def find_request(self, session_id: str, command: str) -> ConsentRequest | None:
         for r in self._requests.values():
             if r.session_id == session_id and r.command == command:
                 return r

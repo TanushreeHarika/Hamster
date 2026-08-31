@@ -7,9 +7,8 @@ from typing import Any
 
 import requests
 
-from hamster.config import Config, DEFAULT_OPENROUTER_MODEL
+from hamster.config import DEFAULT_OPENROUTER_MODEL, Config
 from hamster.tools import TOOL_SCHEMAS
-
 
 OPENROUTER_CHAT_URL = "https://openrouter.ai/api/v1/chat/completions"
 
@@ -40,7 +39,9 @@ class OpenRouterClient:
     def __init__(self, config: Config) -> None:
         self.config = config
 
-    def stream_chat(self, messages: list[dict[str, Any]]) -> Iterator[str | StreamResult]:
+    def stream_chat(
+        self, messages: list[dict[str, Any]]
+    ) -> Iterator[str | StreamResult]:
         if not self.config.openrouter_api_key:
             raise RuntimeError("OPENROUTER_API_KEY is empty in .env.")
 
@@ -68,8 +69,11 @@ class OpenRouterClient:
         )
         try:
             response.raise_for_status()
-        except requests.HTTPError as exc:
-            if response.status_code == 404 and self.config.model != DEFAULT_OPENROUTER_MODEL:
+        except requests.HTTPError:
+            if (
+                response.status_code == 404
+                and self.config.model != DEFAULT_OPENROUTER_MODEL
+            ):
                 payload["model"] = DEFAULT_OPENROUTER_MODEL
                 response = requests.post(
                     OPENROUTER_CHAT_URL,
@@ -80,7 +84,7 @@ class OpenRouterClient:
                 )
                 response.raise_for_status()
             else:
-                raise exc
+                raise
 
         result = StreamResult()
         for raw_line in response.iter_lines(decode_unicode=True):
@@ -101,7 +105,11 @@ class OpenRouterClient:
                 index = call_delta["index"]
                 call = result.tool_calls.setdefault(
                     index,
-                    {"id": "", "type": "function", "function": {"name": "", "arguments": ""}},
+                    {
+                        "id": "",
+                        "type": "function",
+                        "function": {"name": "", "arguments": ""},
+                    },
                 )
                 if call_delta.get("id"):
                     call["id"] = call_delta["id"]

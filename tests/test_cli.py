@@ -5,8 +5,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-import hamster.cli as cli
-import hamster.tools as tools
+from hamster import cli, tools
 
 
 class TestCLIEndOfTaskSave(unittest.TestCase):
@@ -22,7 +21,9 @@ class TestCLIEndOfTaskSave(unittest.TestCase):
             patch("hamster.cli.Path.cwd", return_value=self.project),
             patch("hamster.cli.print_logo"),
             patch("hamster.cli.print_exit_logo"),
-            patch("hamster.cli.load_config", return_value=SimpleNamespace(max_failures=1)),
+            patch(
+                "hamster.cli.load_config", return_value=SimpleNamespace(max_failures=1)
+            ),
             patch("hamster.cli.OpenRouterClient", return_value=object()),
             patch("hamster.cli.run_agent_turn", side_effect=draft_change),
             patch("hamster.cli.request_save_changes", return_value="accept"),
@@ -30,7 +31,10 @@ class TestCLIEndOfTaskSave(unittest.TestCase):
         ):
             cli.main()
 
-        self.assertEqual((self.project / "index.html").read_text(encoding="utf-8"), "<!DOCTYPE html>\n")
+        self.assertEqual(
+            (self.project / "index.html").read_text(encoding="utf-8"),
+            "<!DOCTYPE html>\n",
+        )
 
 
 if __name__ == "__main__":

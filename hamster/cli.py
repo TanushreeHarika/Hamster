@@ -7,11 +7,14 @@ from hamster.agent import initial_messages, run_agent_turn
 from hamster.checkpoint import CheckpointStore
 from hamster.config import load_config
 from hamster.openrouter import OpenRouterClient
+from hamster.rpc import RPCGateway, SessionManager
 from hamster.session_store import SessionStore
 from hamster.tools import (
+    apply_sandbox_to_root,
     cleanup_sandbox,
     configure_sandbox,
     discard_sandbox_changes,
+    get_session_state,
     has_pending_sandbox_changes,
     init_session_state,
     list_sandbox_files,
@@ -19,8 +22,6 @@ from hamster.tools import (
     pending_change_summary,
     review_changes,
     run_sandbox_command,
-    apply_sandbox_to_root,
-    get_session_state,
     sync_workspace_to_sandbox,
     undo_workspace,
 )
@@ -32,14 +33,15 @@ from hamster.ui import (
     print_logo,
     print_session_resumed,
     print_sessions_table,
+    print_set_key_success,
     print_undo_result,
+    print_version,
     print_whoami,
     prompt_user,
     request_save_changes,
 )
-from hamster.rpc import SessionManager, RPCGateway
 from src.sandbox import TempSandbox
-from src.transactions import snapshot_files, rollback_snapshot, FileSnapshot
+from src.transactions import FileSnapshot, rollback_snapshot, snapshot_files
 
 
 def _ensure_foundation(project_root: Path) -> None:
@@ -51,7 +53,9 @@ def _ensure_foundation(project_root: Path) -> None:
         )
 
 
-def main(resume_messages: list | None = None, resume_session_id: str | None = None) -> None:
+def main(
+    resume_messages: list | None = None, resume_session_id: str | None = None
+) -> None:
     """Run the interactive Hamster session.
 
     Args:
@@ -94,7 +98,9 @@ def main(resume_messages: list | None = None, resume_session_id: str | None = No
     # Use pre-populated messages when resuming, otherwise start fresh
     messages = resume_messages if resume_messages is not None else initial_messages()
 
-    print("Type /help for commands. Changes are reviewed once at the end of each task.\n")
+    print(
+        "Type /help for commands. Changes are reviewed once at the end of each task.\n"
+    )
     while True:
         try:
             user_input = prompt_user("[bold gold3]hamster>[/] ").strip()
@@ -117,6 +123,29 @@ def main(resume_messages: list | None = None, resume_session_id: str | None = No
             clear_screen()
             print_logo()
             continue
+        if user_input == "/version":
+            from hamster import __version__
+
+            print_version(__version__, config.model)
+            continue
+
+        if user_input.startswith("/set-key"):
+            parts = user_input.split(maxsplit=1)
+            if len(parts) < 2 or not parts[1].strip():
+                print("Usage: /set-key <openrouter_api_key>")
+                continue
+            new_key = parts[1].strip()
+            _update_env_key(project_root, "OPENROUTER_API_KEY", new_key)
+            # Reload config so subsequent turns use the new key
+            try:
+                config = load_config(project_root)
+                client = OpenRouterClient(config)
+            except ValueError:
+                pass  # key format is not validated here
+            masked = new_key[:8] + "…" + new_key[-4:] if len(new_key) > 12 else "****"
+            print_set_key_success(masked)
+            continue
+
         if user_input == "/files":
             files = list_sandbox_files()
             print(f"{files}\n")
@@ -136,7 +165,9 @@ def main(resume_messages: list | None = None, resume_session_id: str | None = No
             if not query:
                 print("Usage: /search <technical docs query>")
                 continue
-            user_input = f"Use web_search to look up technical documentation for: {query}"
+            user_input = (
+                f"Use web_search to look up technical documentation for: {query}"
+            )
 
         if user_input.startswith("/consent "):
             parts = user_input.split(maxsplit=2)
@@ -146,7 +177,9 @@ def main(resume_messages: list | None = None, resume_session_id: str | None = No
                     print("No consent requests.")
                 else:
                     for r in reqs:
-                        print(f"{r.request_id}: session={r.session_id} status={r.status} command={r.command}")
+                        print(
+                            f"{r.request_id}: session={r.session_id} status={r.status} command={r.command}"
+                        )
                 continue
             if len(parts) >= 3 and parts[1] == "approve":
                 cid = parts[2]
@@ -169,12 +202,13 @@ def main(resume_messages: list | None = None, resume_session_id: str | None = No
             continue
 
         if user_input == "/login":
-            from hamster.auth.oauth  import AuthFlow
-            from hamster.auth.store  import SecureTokenStore
-            from hamster.auth.user   import get_profile
             import os
 
-            client_id     = os.environ.get("GOOGLE_CLIENT_ID",     "").strip()
+            from hamster.auth.oauth import AuthFlow
+            from hamster.auth.store import SecureTokenStore
+            from hamster.auth.user import get_profile
+
+            client_id = os.environ.get("GOOGLE_CLIENT_ID", "").strip()
             client_secret = os.environ.get("GOOGLE_CLIENT_SECRET", "").strip()
 
             env_path = Path.cwd() / ".env"
@@ -185,7 +219,7 @@ def main(resume_messages: list | None = None, resume_session_id: str | None = No
                         continue
                     key, _, val = line.partition("=")
                     key, val = key.strip(), val.strip()
-                    if key == "GOOGLE_CLIENT_ID"     and not client_id:
+                    if key == "GOOGLE_CLIENT_ID" and not client_id:
                         client_id = val
                     elif key == "GOOGLE_CLIENT_SECRET" and not client_secret:
                         client_secret = val
@@ -193,33 +227,41 @@ def main(resume_messages: list | None = None, resume_session_id: str | None = No
             try:
                 flow = AuthFlow(client_id=client_id, client_secret=client_secret)
                 token_data = flow.run()
-                profile    = get_profile(token_data)
+                profile = get_profile(token_data)
                 payload = {
                     **token_data,
-                    "email":   profile.email,
-                    "name":    profile.name,
+                    "email": profile.email,
+                    "name": profile.name,
                     "picture": profile.picture,
-                    "sub":     profile.sub,
+                    "sub": profile.sub,
                 }
                 SecureTokenStore().save(payload)
                 print_login_success(profile.email)
-            except Exception as exc:
+            except (RuntimeError, ValueError, OSError) as exc:
                 print(f"\n❌  Login failed: {exc}")
             continue
 
         if user_input == "/logout":
-            from hamster.auth.store import SecureTokenStore
             from rich.console import Console
+
+            from hamster.auth.store import SecureTokenStore
+
             SecureTokenStore().delete()
-            Console().print("[bold gold3]🐹  Logged out.[/] Credentials cleared from all storage backends.")
+            Console().print(
+                "[bold gold3]🐹  Logged out.[/] Credentials cleared from all storage backends."
+            )
             continue
 
         if user_input == "/whoami":
-            from hamster.auth.store import SecureTokenStore
             from rich.console import Console
+
+            from hamster.auth.store import SecureTokenStore
+
             payload = SecureTokenStore().load()
             if not payload or not payload.get("email"):
-                Console().print("[yellow]⚠️  Not logged in.[/] Run [bold cyan]/login[/] first.")
+                Console().print(
+                    "[yellow]⚠️  Not logged in.[/] Run [bold cyan]/login[/] first."
+                )
             else:
                 print_whoami(payload)
             continue
@@ -259,11 +301,15 @@ def main(resume_messages: list | None = None, resume_session_id: str | None = No
         store.update_meta(
             persist_session_id,
             last_prompt=user_input[:200],
-            token_usage=len(messages),  # rough proxy; replace with real token count if available
+            token_usage=len(
+                messages
+            ),  # rough proxy; replace with real token count if available
         )
 
         if has_pending_sandbox_changes():
-            decision = request_save_changes(pending_change_summary(), pending_change_diff())
+            decision = request_save_changes(
+                pending_change_summary(), pending_change_diff()
+            )
             if decision == "accept":
                 print(f"{apply_sandbox_to_root(project_root=project_root)}\n")
             else:
@@ -273,11 +319,44 @@ def main(resume_messages: list | None = None, resume_session_id: str | None = No
         sandbox = start_sandbox()
 
 
+def _update_env_key(project_root: "Path", key: str, value: str) -> None:
+    """Update or insert *key*=*value* in the ``.env`` file at *project_root*.
+
+    Existing lines matching *key* are replaced in-place; if the key is absent
+    it is appended.  Uses atomic write (temp file → rename) so no partial
+    write can corrupt the file.
+    """
+    env_path = project_root / ".env"
+    lines: list[str] = []
+    found = False
+    if env_path.exists():
+        for line in env_path.read_text(encoding="utf-8").splitlines():
+            stripped = line.strip()
+            if stripped.startswith((f"{key}=", f"{key} =")):
+                lines.append(f"{key}={value}")
+                found = True
+            else:
+                lines.append(line)
+    if not found:
+        lines.append(f"{key}={value}")
+    # atomic write
+    tmp = env_path.with_suffix(".tmp")
+    tmp.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    tmp.replace(env_path)
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(prog="hamster")
     sub = parser.add_subparsers(dest="cmd", help="sub-command help")
 
     sub.add_parser("start", help="Start interactive Hamster session")
+
+    sub.add_parser("version", help="Show Hamster version, model, and Python info")
+
+    p_set_key = sub.add_parser(
+        "set-key", help="Set or rotate the OpenRouter API key in .env"
+    )
+    p_set_key.add_argument("api_key", help="New OpenRouter API key")
 
     p_exec = sub.add_parser("exec", help="Run a checked shell command")
     p_exec.add_argument("command", nargs=argparse.REMAINDER, help="Command to run")
@@ -287,18 +366,24 @@ if __name__ == "__main__":
     p_snap.add_argument("--out", "-o", help="Output file to write snapshot (JSON)")
 
     p_restore = sub.add_parser("restore", help="Restore from a snapshot JSON file")
-    p_restore.add_argument("snapshot_file", help="Snapshot JSON file produced by `snapshot`")
+    p_restore.add_argument(
+        "snapshot_file", help="Snapshot JSON file produced by `snapshot`"
+    )
 
     p_diff = sub.add_parser("diff", help="Show draft file listing")
     p_diff.add_argument("--pattern", "-p", default="", help="Filter pattern")
 
     p_approve = sub.add_parser("approve", help="Approve read scope for the session")
-    p_approve.add_argument("scope", nargs="?", default="codebase", help="Scope to approve")
+    p_approve.add_argument(
+        "scope", nargs="?", default="codebase", help="Scope to approve"
+    )
 
     p_consent = sub.add_parser("consent", help="Manage consent requests")
     consent_sub = p_consent.add_subparsers(dest="consent_cmd")
     consent_sub.add_parser("list", help="List pending consent requests")
-    p_consent_approve = consent_sub.add_parser("approve", help="Approve a consent request by id")
+    p_consent_approve = consent_sub.add_parser(
+        "approve", help="Approve a consent request by id"
+    )
     p_consent_approve.add_argument("id", help="Consent request id")
     p_consent_deny = consent_sub.add_parser("deny", help="Deny a consent request by id")
     p_consent_deny.add_argument("id", help="Consent request id")
@@ -307,10 +392,12 @@ if __name__ == "__main__":
     sub.add_parser("list-sessions", help="List all saved Hamster sessions")
 
     p_resume = sub.add_parser("resume", help="Resume a saved Hamster session")
-    p_resume.add_argument("session_id", help="Session ID to resume (from list-sessions)")
+    p_resume.add_argument(
+        "session_id", help="Session ID to resume (from list-sessions)"
+    )
 
     # --- Auth sub-commands ---
-    sub.add_parser("login",  help="Log in with Google (OAuth 2.0 PKCE flow)")
+    sub.add_parser("login", help="Log in with Google (OAuth 2.0 PKCE flow)")
     sub.add_parser("logout", help="Clear saved Google credentials")
     sub.add_parser("whoami", help="Show the currently logged-in user")
 
@@ -318,6 +405,29 @@ if __name__ == "__main__":
 
     if args.cmd in (None, "start"):
         main()
+        sys.exit(0)
+
+    if args.cmd == "version":
+        from hamster import __version__
+
+        project_root = Path.cwd()
+        try:
+            cfg = load_config(project_root)
+            model = cfg.model
+        except (OSError, ValueError, AttributeError):
+            model = "(config not loaded)"
+        print_version(__version__, model)
+        sys.exit(0)
+
+    if args.cmd == "set-key":
+        project_root = Path.cwd()
+        new_key = args.api_key.strip()
+        if not new_key:
+            print("Error: api_key must not be empty.")
+            sys.exit(1)
+        _update_env_key(project_root, "OPENROUTER_API_KEY", new_key)
+        masked = new_key[:8] + "…" + new_key[-4:] if len(new_key) > 12 else "****"
+        print_set_key_success(masked)
         sys.exit(0)
 
     if args.cmd == "list-sessions":
@@ -331,7 +441,9 @@ if __name__ == "__main__":
         session_id = args.session_id.strip()
         row = store.get_session(session_id)
         if row is None:
-            print(f"Session '{session_id}' not found. Run 'hamster list-sessions' to see available sessions.")
+            print(
+                f"Session '{session_id}' not found. Run 'hamster list-sessions' to see available sessions."
+            )
             sys.exit(1)
         saved_messages = store.load_messages(session_id)
         if not saved_messages:
@@ -368,7 +480,9 @@ if __name__ == "__main__":
             for k, v in snap.items()
         }
         if args.out:
-            Path(args.out).write_text(json.dumps(serializable, indent=2), encoding="utf-8")
+            Path(args.out).write_text(
+                json.dumps(serializable, indent=2), encoding="utf-8"
+            )
             print(f"Wrote snapshot to {args.out}")
         else:
             print(json.dumps(serializable, indent=2))
@@ -378,7 +492,9 @@ if __name__ == "__main__":
         data = json.loads(Path(args.snapshot_file).read_text(encoding="utf-8"))
         reconstructed: dict[str, FileSnapshot] = {}
         for k, v in data.items():
-            reconstructed[k] = FileSnapshot(path=v["path"], original_text=v["original_text"], exists=v["exists"])
+            reconstructed[k] = FileSnapshot(
+                path=v["path"], original_text=v["original_text"], exists=v["exists"]
+            )
         res = rollback_snapshot(reconstructed)
         print(json.dumps(res, indent=2))
         sys.exit(0)
@@ -397,7 +513,7 @@ if __name__ == "__main__":
 
     if args.cmd == "consent":
         # Use a local in-process SessionManager + RPCGateway for consent handling
-        from hamster.rpc import SessionManager, RPCGateway
+        from hamster.rpc import RPCGateway, SessionManager
 
         sm = SessionManager()
         gw = RPCGateway(sm)
@@ -408,7 +524,9 @@ if __name__ == "__main__":
                 print("No consent requests.")
             else:
                 for r in reqs:
-                    print(f"{r.request_id}: session={r.session_id} status={r.status} command={r.command}")
+                    print(
+                        f"{r.request_id}: session={r.session_id} status={r.status} command={r.command}"
+                    )
             sys.exit(0)
 
         if args.consent_cmd == "approve":
@@ -423,12 +541,13 @@ if __name__ == "__main__":
 
     # --- Auth command handlers ---
     if args.cmd == "login":
-        from hamster.auth.oauth  import AuthFlow
-        from hamster.auth.store  import SecureTokenStore
-        from hamster.auth.user   import get_profile
         import os
 
-        client_id     = os.environ.get("GOOGLE_CLIENT_ID",     "").strip()
+        from hamster.auth.oauth import AuthFlow
+        from hamster.auth.store import SecureTokenStore
+        from hamster.auth.user import get_profile
+
+        client_id = os.environ.get("GOOGLE_CLIENT_ID", "").strip()
         client_secret = os.environ.get("GOOGLE_CLIENT_SECRET", "").strip()
 
         # Load from .env if not already in environment
@@ -440,7 +559,7 @@ if __name__ == "__main__":
                     continue
                 key, _, val = line.partition("=")
                 key, val = key.strip(), val.strip()
-                if key == "GOOGLE_CLIENT_ID"     and not client_id:
+                if key == "GOOGLE_CLIENT_ID" and not client_id:
                     client_id = val
                 elif key == "GOOGLE_CLIENT_SECRET" and not client_secret:
                     client_secret = val
@@ -448,14 +567,14 @@ if __name__ == "__main__":
         try:
             flow = AuthFlow(client_id=client_id, client_secret=client_secret)
             token_data = flow.run()
-            profile    = get_profile(token_data)
+            profile = get_profile(token_data)
             # Persist tokens + profile together so whoami works offline
             payload = {
                 **token_data,
-                "email":   profile.email,
-                "name":    profile.name,
+                "email": profile.email,
+                "name": profile.name,
                 "picture": profile.picture,
-                "sub":     profile.sub,
+                "sub": profile.sub,
             }
             SecureTokenStore().save(payload)
             print_login_success(profile.email)
@@ -466,8 +585,10 @@ if __name__ == "__main__":
 
     if args.cmd == "logout":
         from hamster.auth.store import SecureTokenStore
+
         SecureTokenStore().delete()
         from rich.console import Console
+
         Console().print(
             "[bold gold3]🐹  Logged out.[/] Credentials cleared from all storage backends."
         )
@@ -475,9 +596,11 @@ if __name__ == "__main__":
 
     if args.cmd == "whoami":
         from hamster.auth.store import SecureTokenStore
+
         payload = SecureTokenStore().load()
         if not payload or not payload.get("email"):
             from rich.console import Console
+
             Console().print(
                 "[yellow]⚠️  Not logged in.[/] Run [bold cyan]hamster login[/] first."
             )

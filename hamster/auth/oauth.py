@@ -10,6 +10,7 @@ Typical usage::
     token_data = flow.run()          # opens browser, blocks until callback
     # token_data keys: access_token, refresh_token, id_token, expires_in
 """
+
 from __future__ import annotations
 
 import base64
@@ -24,23 +25,24 @@ from typing import Any
 
 from hamster.auth.server import REDIRECT_URI, SingleRequestHTTPServer
 
-
 # ---------------------------------------------------------------------------
 # Google OAuth 2.0 endpoints
 # ---------------------------------------------------------------------------
 
-GOOGLE_AUTH_URL   = "https://accounts.google.com/o/oauth2/v2/auth"
-GOOGLE_TOKEN_URL  = "https://oauth2.googleapis.com/token"
-OAUTH_SCOPES      = "openid email profile"
+GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
+GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
+OAUTH_SCOPES = "openid email profile"
 
 
 # ---------------------------------------------------------------------------
 # PKCE helpers
 # ---------------------------------------------------------------------------
 
+
 @dataclass(frozen=True)
 class PKCEParams:
     """Immutable PKCE parameter pair."""
+
     code_verifier: str
     code_challenge: str
 
@@ -54,7 +56,9 @@ def generate_pkce_params() -> PKCEParams:
     """
     # 96 bytes → 128 base64url chars (no padding)
     verifier_bytes = secrets.token_bytes(96)
-    code_verifier = base64.urlsafe_b64encode(verifier_bytes).rstrip(b"=").decode("ascii")
+    code_verifier = (
+        base64.urlsafe_b64encode(verifier_bytes).rstrip(b"=").decode("ascii")
+    )
 
     # S256 challenge: BASE64URL(SHA256(ASCII(verifier)))
     digest = hashlib.sha256(code_verifier.encode("ascii")).digest()
@@ -71,6 +75,7 @@ def generate_state() -> str:
 # ---------------------------------------------------------------------------
 # Authorization URL builder
 # ---------------------------------------------------------------------------
+
 
 def build_auth_url(
     client_id: str,
@@ -93,15 +98,15 @@ def build_auth_url(
         Fully-formed authorization URL ready to open in the user's browser.
     """
     params = {
-        "client_id":             client_id,
-        "redirect_uri":          redirect_uri,
-        "response_type":         "code",
-        "scope":                 scopes,
-        "state":                 state,
-        "code_challenge":        pkce.code_challenge,
+        "client_id": client_id,
+        "redirect_uri": redirect_uri,
+        "response_type": "code",
+        "scope": scopes,
+        "state": state,
+        "code_challenge": pkce.code_challenge,
         "code_challenge_method": "S256",
-        "access_type":           "offline",  # request refresh_token
-        "prompt":                "consent",  # force consent so refresh_token is always returned
+        "access_type": "offline",  # request refresh_token
+        "prompt": "consent",  # force consent so refresh_token is always returned
     }
     return f"{GOOGLE_AUTH_URL}?{urllib.parse.urlencode(params)}"
 
@@ -109,6 +114,7 @@ def build_auth_url(
 # ---------------------------------------------------------------------------
 # Token exchange
 # ---------------------------------------------------------------------------
+
 
 def exchange_code(
     *,
@@ -138,14 +144,16 @@ def exchange_code(
     Raises:
         RuntimeError: If the token endpoint returns a non-200 response.
     """
-    payload = urllib.parse.urlencode({
-        "grant_type":    "authorization_code",
-        "code":          code,
-        "redirect_uri":  redirect_uri,
-        "client_id":     client_id,
-        "client_secret": client_secret,
-        "code_verifier": code_verifier,
-    }).encode("ascii")
+    payload = urllib.parse.urlencode(
+        {
+            "grant_type": "authorization_code",
+            "code": code,
+            "redirect_uri": redirect_uri,
+            "client_id": client_id,
+            "client_secret": client_secret,
+            "code_verifier": code_verifier,
+        }
+    ).encode("ascii")
 
     req = urllib.request.Request(
         GOOGLE_TOKEN_URL,
@@ -159,8 +167,7 @@ def exchange_code(
     except urllib.error.HTTPError as exc:
         error_body = exc.read().decode("utf-8", errors="replace")
         raise RuntimeError(
-            f"Token exchange failed: HTTP {exc.code}. "
-            f"Response: {error_body}"
+            f"Token exchange failed: HTTP {exc.code}. Response: {error_body}"
         ) from exc
 
     return json.loads(body)
@@ -169,6 +176,7 @@ def exchange_code(
 # ---------------------------------------------------------------------------
 # High-level orchestrator
 # ---------------------------------------------------------------------------
+
 
 class AuthFlow:
     """Full PKCE + OAuth 2.0 authorization flow orchestrator.
@@ -207,10 +215,10 @@ class AuthFlow:
                 "GOOGLE_CLIENT_SECRET is not set. "
                 "Add it to your .env file to use `hamster login`."
             )
-        self.client_id     = client_id
+        self.client_id = client_id
         self.client_secret = client_secret
-        self.redirect_uri  = redirect_uri
-        self.timeout       = timeout
+        self.redirect_uri = redirect_uri
+        self.timeout = timeout
 
     def run(self) -> dict[str, Any]:
         """Execute the full PKCE login flow and return the token dictionary.
@@ -229,7 +237,7 @@ class AuthFlow:
         Raises:
             RuntimeError: On state mismatch, server timeout, or token exchange failure.
         """
-        pkce  = generate_pkce_params()
+        pkce = generate_pkce_params()
         state = generate_state()
         auth_url = build_auth_url(
             client_id=self.client_id,
@@ -238,7 +246,7 @@ class AuthFlow:
             pkce=pkce,
         )
 
-        print(f"\n🔗  Opening browser for Google login…")
+        print("\n🔗  Opening browser for Google login…")
         print(f"   If it doesn't open automatically, visit:\n   {auth_url}\n")
         webbrowser.open(auth_url)
 

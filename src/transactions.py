@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import os
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Iterable
-import os
+from typing import Any
 
 
 @dataclass(frozen=True)
@@ -33,7 +34,9 @@ class TransactionManager:
             exists = path.exists()
             snapshots[resolved] = FileSnapshot(
                 path=resolved,
-                original_text=path.read_text(encoding="utf-8") if exists and path.is_file() else None,
+                original_text=path.read_text(encoding="utf-8")
+                if exists and path.is_file()
+                else None,
                 exists=exists,
             )
         return snapshots
@@ -50,7 +53,12 @@ class TransactionManager:
                 restored[resolved_path] = "removed"
         return restored
 
-    def run(self, operation: Callable[[], Any], *, verifier: Callable[[], bool] | None = None) -> Any:
+    def run(
+        self,
+        operation: Callable[[], Any],
+        *,
+        verifier: Callable[[], bool] | None = None,
+    ) -> Any:
         """Execute an operation and automatically rollback on failure or verifier failure."""
 
         try:

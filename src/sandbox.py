@@ -98,21 +98,23 @@ class TempSandbox:
     # ------------------------------------------------------------------
 
     # Entries ignored when copying the project into the sandbox.
-    _IGNORED_ENTRIES: frozenset[str] = frozenset({
-        ".git",
-        ".hg",
-        ".svn",
-        ".venv",
-        "venv",
-        "__pycache__",
-        ".pytest_cache",
-        ".mypy_cache",
-        ".ruff_cache",
-        "node_modules",
-        "dist",
-        "build",
-        "sandbox",
-    })
+    _IGNORED_ENTRIES: frozenset[str] = frozenset(
+        {
+            ".git",
+            ".hg",
+            ".svn",
+            ".venv",
+            "venv",
+            "__pycache__",
+            ".pytest_cache",
+            ".mypy_cache",
+            ".ruff_cache",
+            "node_modules",
+            "dist",
+            "build",
+            "sandbox",
+        }
+    )
 
     @classmethod
     def _ignore_project_entries(cls, _directory: str, names: list[str]) -> set[str]:
@@ -168,7 +170,7 @@ class TempSandbox:
                         # cp -c unsupported on this volume — use regular copy
                         shutil.copy2(item, target)
             return True
-        except Exception:
+        except (OSError, ValueError, RuntimeError):
             # Any error: clean up partial clone and signal caller to use copytree
             if dest.exists():
                 shutil.rmtree(dest, ignore_errors=True)

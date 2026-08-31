@@ -34,6 +34,7 @@ New additions
 ``DockerSession``         — persistent session class
 ``get_session()``         — module-level persistent session singleton
 """
+
 from __future__ import annotations
 
 import atexit
@@ -42,12 +43,12 @@ import shlex
 import shutil
 import subprocess
 import threading
-from typing import NamedTuple
-
+from typing import NamedTuple, Self
 
 # ---------------------------------------------------------------------------
 # Public exception
 # ---------------------------------------------------------------------------
+
 
 class IsolationError(RuntimeError):
     """Raised when Docker isolation is required but unavailable.
@@ -62,6 +63,7 @@ class IsolationError(RuntimeError):
 # ---------------------------------------------------------------------------
 # Module-level isolation enforcement flag
 # ---------------------------------------------------------------------------
+
 
 def _read_require_isolation() -> bool:
     """Read HAMSTER_REQUIRE_ISOLATION from the environment.
@@ -79,6 +81,7 @@ REQUIRE_ISOLATION: bool = _read_require_isolation()
 # Shared result type
 # ---------------------------------------------------------------------------
 
+
 class ContainerResult(NamedTuple):
     """Unified result type for both container and host-fallback execution."""
 
@@ -90,6 +93,7 @@ class ContainerResult(NamedTuple):
 # ---------------------------------------------------------------------------
 # Docker availability helper (shared by both backends)
 # ---------------------------------------------------------------------------
+
 
 def _docker_is_available() -> bool:
     """Return True if the Docker CLI is on PATH and the daemon responds."""
@@ -110,6 +114,7 @@ def _docker_is_available() -> bool:
 # ---------------------------------------------------------------------------
 # Persistent Docker session
 # ---------------------------------------------------------------------------
+
 
 class DockerSession:
     """Persistent background Docker container for interactive agent use.
@@ -141,7 +146,7 @@ class DockerSession:
     """
 
     DEFAULT_IMAGE: str = "python:3.11-slim"
-    EXEC_TIMEOUT: int = 60   # seconds per command
+    EXEC_TIMEOUT: int = 60  # seconds per command
     START_TIMEOUT: int = 15  # seconds to wait for container start
 
     def __init__(
@@ -215,10 +220,10 @@ class DockerSession:
                 timeout=10,
                 check=False,
             )
-        except Exception:
+        except (OSError, subprocess.SubprocessError):
             pass
 
-    def __enter__(self) -> "DockerSession":
+    def __enter__(self) -> Self:
         self.start()
         return self
 
@@ -228,7 +233,7 @@ class DockerSession:
     def __del__(self) -> None:
         try:
             self.stop()
-        except Exception:
+        except (AttributeError, OSError, RuntimeError):
             pass
 
     # ------------------------------------------------------------------
@@ -249,7 +254,7 @@ class DockerSession:
                 check=False,
             )
             return result.returncode == 0 and result.stdout.strip() == "true"
-        except Exception:
+        except (OSError, subprocess.SubprocessError, ValueError):
             return False
 
     def restart_container(self) -> None:
@@ -268,7 +273,7 @@ class DockerSession:
                     timeout=5,
                     check=False,
                 )
-            except Exception:
+            except (OSError, subprocess.SubprocessError):
                 pass
 
         with self._lock:
@@ -316,9 +321,11 @@ class DockerSession:
 
         # Build docker exec argv
         docker_cmd: list[str] = [
-            "docker", "exec",
+            "docker",
+            "exec",
             "-i",
-            "-w", self.cwd,
+            "-w",
+            self.cwd,
         ]
         # Forward tracked env vars
         for key, value in self.env.items():
@@ -359,7 +366,8 @@ class DockerSession:
     def _spin_up_container(self) -> str:
         """Start a detached background container and return its container ID."""
         docker_cmd: list[str] = [
-            "docker", "run",
+            "docker",
+            "run",
             "--rm",
             "--detach",
             "--network=none",
@@ -371,7 +379,9 @@ class DockerSession:
 
         docker_cmd += [
             self.image,
-            "tail", "-f", "/dev/null",
+            "tail",
+            "-f",
+            "/dev/null",
         ]
 
         try:
@@ -404,6 +414,7 @@ class DockerSession:
 # ---------------------------------------------------------------------------
 # Ephemeral per-command backend (original, preserved for backward compat)
 # ---------------------------------------------------------------------------
+
 
 class DockerSandboxBackend:
     """Execute commands in an ephemeral Docker container.
@@ -484,7 +495,8 @@ class DockerSandboxBackend:
             )
 
         docker_cmd: list[str] = [
-            "docker", "run",
+            "docker",
+            "run",
             "--rm",
             "--network=none",
             "--memory=256m",

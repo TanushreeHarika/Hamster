@@ -3,7 +3,6 @@ from __future__ import annotations
 import re
 from typing import Any
 
-
 _TOKEN_PATTERN = re.compile(r"\w+|[\[\]{}()\-.,:;!?/]+")
 
 
@@ -30,7 +29,7 @@ try:
 
     _cl100k = _tiktoken.get_encoding("cl100k_base")
 
-    def estimate_tokens(text: str) -> int:  # type: ignore[misc]  # noqa: F811
+    def estimate_tokens(text: str) -> int:  # type: ignore[misc]
         """Estimate tokens using cl100k_base BPE encoding (tiktoken)."""
         if not text:
             return 1
@@ -46,17 +45,27 @@ class CompactContextManager:
     def __init__(self, token_budget: int = 4000) -> None:
         self.token_budget = token_budget
 
-    def compact_messages(self, messages: list[dict[str, Any]], *, keep_tail: int = 3) -> list[dict[str, Any]]:
+    def compact_messages(
+        self, messages: list[dict[str, Any]], *, keep_tail: int = 3
+    ) -> list[dict[str, Any]]:
         if not messages:
             return []
 
-        estimated = sum(estimate_tokens(str(message.get("content", ""))) for message in messages)
+        estimated = sum(
+            estimate_tokens(str(message.get("content", ""))) for message in messages
+        )
         if estimated <= self.token_budget:
             return messages
 
-        system_messages = [message for message in messages if message.get("role") == "system"]
+        system_messages = [
+            message for message in messages if message.get("role") == "system"
+        ]
         tail_messages = messages[-keep_tail:]
-        middle_messages = [message for message in messages if message not in system_messages and message not in tail_messages]
+        middle_messages = [
+            message
+            for message in messages
+            if message not in system_messages and message not in tail_messages
+        ]
 
         collapsed: list[dict[str, Any]] = []
         collapsed.extend(system_messages)
@@ -89,7 +98,8 @@ class CompactContextManager:
                 "tool_call_id": message.get("tool_call_id", ""),
                 "name": message.get("name", ""),
                 "content": (
-                    content if len(tokens) <= 120
+                    content
+                    if len(tokens) <= 120
                     else "[condensed] " + " ".join(tokens[:80]) + " ..."
                 ),
             }
@@ -101,14 +111,21 @@ class CompactContextManager:
                 tc.get("function", {}).get("name", "?")
                 for tc in (message.get("tool_calls") or [])
             )
-            return {"role": "assistant", "content": f"[condensed tool call: {tool_names}]"}
+            return {
+                "role": "assistant",
+                "content": f"[condensed tool call: {tool_names}]",
+            }
 
         # everything else: plain text truncation
         if len(tokens) <= 120:
             return {"role": role, "content": content}
-        return {"role": role, "content": "[condensed history] " + " ".join(tokens[:80]) + " ..."}
+        return {
+            "role": role,
+            "content": "[condensed history] " + " ".join(tokens[:80]) + " ...",
+        }
 
 
-def compact_context(messages: list[dict[str, Any]], *, token_budget: int = 4000) -> list[dict[str, Any]]:
+def compact_context(
+    messages: list[dict[str, Any]], *, token_budget: int = 4000
+) -> list[dict[str, Any]]:
     return CompactContextManager(token_budget=token_budget).compact_messages(messages)
-

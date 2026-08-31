@@ -16,6 +16,7 @@ Usage::
     profile = store.load()
     store.delete()
 """
+
 from __future__ import annotations
 
 import json
@@ -23,7 +24,6 @@ import os
 import stat
 from pathlib import Path
 from typing import Any
-
 
 _SERVICE_NAME = "hamster-cli"
 _KEYRING_USER = "session"
@@ -43,8 +43,8 @@ class SecureTokenStore:
         service: str = _SERVICE_NAME,
         fallback_path: Path = _FALLBACK_PATH,
     ) -> None:
-        self._service       = service
-        self._username      = _KEYRING_USER
+        self._service = service
+        self._username = _KEYRING_USER
         self._fallback_path = fallback_path
 
     # ------------------------------------------------------------------
@@ -96,25 +96,28 @@ class SecureTokenStore:
         """
         try:
             import keyring  # optional dependency
+
             keyring.set_password(self._service, self._username, serialized)
             return True
-        except Exception:  # ImportError, keyring.errors.*, etc.
+        except (ImportError, RuntimeError, OSError, ValueError):
             return False
 
     def _keyring_load(self) -> str | None:
         """Return the raw JSON string from the OS keyring, or ``None``."""
         try:
             import keyring
+
             return keyring.get_password(self._service, self._username)
-        except Exception:
+        except (ImportError, RuntimeError, OSError, ValueError):
             return None
 
     def _keyring_delete(self) -> None:
         """Remove the entry from the OS keyring (silently ignores all errors)."""
         try:
             import keyring
+
             keyring.delete_password(self._service, self._username)
-        except Exception:
+        except (ImportError, RuntimeError, OSError, ValueError):
             pass
 
     # ------------------------------------------------------------------

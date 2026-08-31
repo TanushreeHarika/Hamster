@@ -3,18 +3,19 @@
 Provides a `VFSManager` that wraps the existing `TempSandbox` layout and offers
 basic snapshot and listing helpers used by the CLI and higher-level code.
 """
+
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Iterable
 
 from src.sandbox import TempSandbox
 
 
 @dataclass
 class VFSSnapshot:
-    files: Dict[str, str]
+    files: dict[str, str]
 
 
 class VFSManager:
@@ -32,7 +33,7 @@ class VFSManager:
         return out
 
     def snapshot_paths(self, paths: Iterable[str]) -> VFSSnapshot:
-        files: Dict[str, str] = {}
+        files: dict[str, str] = {}
         for p in paths:
             abs_p = Path(p)
             if abs_p.exists() and abs_p.is_file():

@@ -57,48 +57,27 @@ winget install BurntSushi.ripgrep.MSVC
 
 ## 🚀 Setup & Installation
 
-### Option 1: Using `uv` (Recommended)
-
-1. **Clone & Navigate**:
-   ```bash
-   git clone https://github.com/your-repo/hamster.git
-   cd hamster
-   ```
-
-2. **Create Virtual Environment & Install**:
-   ```bash
-   uv venv
-   # On macOS/Linux:
-   source .venv/bin/activate
-   # On Windows (PowerShell):
-   .venv\Scripts\activate
-
-   uv pip install -e .
-   ```
-
-### Option 2: Using standard `pip`
+Install Hamster globally using `uv` (recommended) or `pip`:
 
 ```bash
-python -m venv venv
-# On macOS/Linux:
-source venv/bin/activate
-# On Windows (PowerShell):
-venv\Scripts\activate
-
-pip install -e .
+uv tool install hamster-agent
+# OR
+pip install hamster-agent
 ```
 
 ---
 
 ## ⚙️ Configuration
 
-Create or update a `.env` file in the project root directory:
+Set up your OpenRouter API key using the built-in command:
 
-```env
-OPENROUTER_API_KEY=your_openrouter_api_key_here
-OPENROUTER_MODEL=openai/gpt-4o-mini  # Optional model override
-MAX_TOKENS=4096
-MAX_FAILURES=3
+```bash
+hamster set-key your_openrouter_api_key_here
+```
+
+You can optionally log in with Google to enable advanced features:
+```bash
+hamster login
 ```
 
 ---
@@ -114,13 +93,20 @@ hamster
 
 | Command | Description |
 | :--- | :--- |
-| `/help` | Displays the interactive command guide and tooling overview. |
-| `/files` | Lists all files currently modified or staged in the draft workspace. |
-| `/pending` | Displays a summary of pending drafted changes. |
-| `/apply` | Manually applies drafted changes to the real project root. |
-| `/search <query>` | Triggers a DuckDuckGo documentation search. |
-| `/clear` | Clears the terminal screen and refreshes the Hamster splash art. |
-| `/exit` | Safely destroys the active sandbox workspace and exits. |
+| `/help` | Show the command guide and tooling overview. |
+| `/version` | Show Hamster version, model, and Python info. |
+| `/files` | List files in the current draft. |
+| `/search <query>` | Ask Hamster to search technical documentation. |
+| `/pending` | Show pending draft changes. |
+| `/apply` | Save pending draft changes to disk. |
+| `/sync` | Refresh draft state from disk. |
+| `/undo [N]` | Revert workspace N turns (default 1), keeps conversation log. |
+| `/set-key <key>` | Set or rotate the OpenRouter API key. |
+| `/login` | Log in with Google (OAuth 2.0 PKCE flow). |
+| `/whoami` | Show the currently logged-in user. |
+| `/logout` | Clear saved Google credentials. |
+| `/clear` | Clear the terminal and redraw the splash. |
+| `/exit` | Leave Hamster (prints farewell graphic). |
 
 ---
 

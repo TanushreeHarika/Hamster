@@ -8,20 +8,22 @@ import shutil
 import subprocess
 from pathlib import Path
 
-from src.sandbox import TempSandbox
-from src.container import execute_sandboxed
-from src.security import assert_sandbox_path, PathSecurityViolation
+from hamster.policy import CommandASTAnalyzer
+from hamster.session_store import SessionStore
 from hamster.ui import (
     confirm,
     render_security_violation,
     sandbox_status,
     status,
 )
-
+from src.container import execute_sandboxed
+from src.sandbox import TempSandbox
+from src.security import PathSecurityViolation, assert_sandbox_path
 
 # ---------------------------------------------------------------------------
 # Exceptions
 # ---------------------------------------------------------------------------
+
 
 class SandboxViolation(ValueError):
     pass
@@ -34,6 +36,7 @@ class CommandSecurityViolation(ValueError):
 # ---------------------------------------------------------------------------
 # Session state
 # ---------------------------------------------------------------------------
+
 
 class SessionState:
     """Track approval state across tool calls within a session."""
@@ -90,6 +93,7 @@ def _get_sandbox() -> TempSandbox:
 # ---------------------------------------------------------------------------
 # Internal path helpers
 # ---------------------------------------------------------------------------
+
 
 def _project_root() -> str:
     """Return the project root (cwd at startup)."""
@@ -167,7 +171,9 @@ BLOCKED_COMMAND_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"(^|[;&|]\s*)chown\s+", re.IGNORECASE),
     re.compile(r"curl\s+[^;&|]*\|\s*(sh|bash|zsh|python|python3)\b", re.IGNORECASE),
     re.compile(r"wget\s+[^;&|]*\|\s*(sh|bash|zsh|python|python3)\b", re.IGNORECASE),
-    re.compile(r"\b(base64|openssl)\b[^;&|]*\|\s*(sh|bash|zsh|python|python3)\b", re.IGNORECASE),
+    re.compile(
+        r"\b(base64|openssl)\b[^;&|]*\|\s*(sh|bash|zsh|python|python3)\b", re.IGNORECASE
+    ),
 )
 
 
@@ -181,12 +187,21 @@ def validate_terminal_command(command: str) -> None:
     if not parts:
         raise CommandSecurityViolation("Refusing to run an empty terminal command.")
 
+    if not CommandASTAnalyzer.is_whitelisted_binary(command):
+        raise CommandSecurityViolation(
+            f"Command binary not in allowlist: {command!r}. "
+            "Arbitrary script execution is disabled for security."
+        )
+
 
 # ---------------------------------------------------------------------------
 # Fuzzy patching helper
 # ---------------------------------------------------------------------------
 
-def _try_fuzzy_replace(original: str, target_text: str, replacement_text: str) -> str | None:
+
+def _try_fuzzy_replace(
+    original: str, target_text: str, replacement_text: str
+) -> str | None:
     """Attempt a whitespace-tolerant text replacement in *original*.
 
     Strips trailing whitespace per line before comparing so the model can
@@ -227,6 +242,7 @@ def _try_fuzzy_replace(original: str, target_text: str, replacement_text: str) -
 # Public tool functions
 # ---------------------------------------------------------------------------
 
+
 def run_sandbox_command(command: str) -> str:
     try:
         validate_terminal_command(command)
@@ -239,7 +255,9 @@ def run_sandbox_command(command: str) -> str:
     sandbox = _get_sandbox()
     with sandbox_status("🖥️  Running command..."):
         result = execute_sandboxed(command, cwd=str(sandbox.workspace))
-    return (result.stdout + result.stderr).strip() or f"Command exited with {result.returncode}."
+    return (
+        result.stdout + result.stderr
+    ).strip() or f"Command exited with {result.returncode}."
 
 
 def search_codebase(query: str) -> str:
@@ -276,13 +294,16 @@ def search_codebase(query: str) -> str:
             check=False,
         )
     if result.returncode == 0:
-        return result.stdout.strip() or "No matches."
+        out = result.stdout.strip() or "No matches."
+        return f"<untrusted_content>\n{out}\n</untrusted_content>"
     if result.returncode == 1:
         return "No matches."
     raise RuntimeError(result.stderr.strip() or "rg failed without stderr.")
 
 
-def read_file(filepath: str, start_line: int | None = None, end_line: int | None = None) -> str:
+def read_file(
+    filepath: str, start_line: int | None = None, end_line: int | None = None
+) -> str:
     """Read *filepath* from the draft workspace.
 
     Args:
@@ -316,7 +337,7 @@ def read_file(filepath: str, start_line: int | None = None, end_line: int | None
 
         # Return full content when no line range is requested
         if start_line is None and end_line is None:
-            return content
+            return f"<untrusted_content>\n{content}\n</untrusted_content>"
 
         lines = content.splitlines(keepends=True)
         total = len(lines)
@@ -329,7 +350,8 @@ def read_file(filepath: str, start_line: int | None = None, end_line: int | None
             return f"start_line {start_line} exceeds file length ({total} lines)."
 
         header = f"[Lines {s + 1}–{e} of {total}]\n"
-        return header + "".join(lines[s:e])
+        out = header + "".join(lines[s:e])
+        return f"<untrusted_content>\n{out}\n</untrusted_content>"
 
     except FileNotFoundError as exc:
         return f"File not found: {exc}"
@@ -371,7 +393,9 @@ def edit_file_patch(filepath: str, target_text: str, replacement_text: str) -> s
     if fuzzy_result is not None:
         with sandbox_status("✏️  Updating file (fuzzy match)..."):
             Path(staged).write_text(fuzzy_result, encoding="utf-8")
-        return f"Updated {filepath}: 1 occurrence replaced (whitespace-normalised match)."
+        return (
+            f"Updated {filepath}: 1 occurrence replaced (whitespace-normalised match)."
+        )
 
     return (
         f"Target text was not found in {filepath}. "
@@ -387,8 +411,8 @@ def write_file(filepath: str, content: str) -> str:
         with sandbox_status("✏️  Writing file..."):
             dest.write_text(content, encoding="utf-8")
         return f"Wrote {filepath}."
-    except Exception as e:
-        return f"Error creating file {filepath}: {e}"
+    except (OSError, ValueError, TypeError) as exc:
+        return f"Error creating file {filepath}: {exc}"
 
 
 def delete_file(filepath: str) -> str:
@@ -422,8 +446,7 @@ def delete_file(filepath: str) -> str:
 
     if staged.is_dir():
         return (
-            f"'{filepath}' is a directory. "
-            "Use delete_file only for individual files."
+            f"'{filepath}' is a directory. Use delete_file only for individual files."
         )
 
     with sandbox_status(f"🗑️  Deleting {filepath}..."):
@@ -461,10 +484,13 @@ def web_search(query: str) -> str:
                 body = item.get("body", "")
                 results.append(f"- {title}\n  {href}\n  {body}")
 
-    return "\n\n".join(results) if results else "No web results found."
+    out = "\n\n".join(results) if results else "No web results found."
+    return f"<untrusted_content>\n{out}\n</untrusted_content>"
 
 
-def apply_sandbox_to_root(project_root: Path | None = None, verbose: bool = False) -> str:
+def apply_sandbox_to_root(
+    project_root: Path | None = None, verbose: bool = False
+) -> str:
     """Save drafted changes back to the real project root and destroy the sandbox.
 
     Diffs the mutable workspace against the pristine baseline, then applies
@@ -514,18 +540,28 @@ def apply_sandbox_to_root(project_root: Path | None = None, verbose: bool = Fals
             baseline_bytes = baseline_path.read_bytes() if baseline_exists else None
             workspace_bytes = workspace_path.read_bytes() if workspace_exists else None
 
-            if baseline_exists and workspace_exists and baseline_bytes == workspace_bytes:
+            if (
+                baseline_exists
+                and workspace_exists
+                and baseline_bytes == workspace_bytes
+            ):
                 continue
 
             if not workspace_exists:
-                if project_path.exists() and project_path.read_bytes() == baseline_bytes:
+                if (
+                    project_path.exists()
+                    and project_path.read_bytes() == baseline_bytes
+                ):
                     deletes.append(project_path)
                 else:
                     conflicts.append(str(rel))
                 continue
 
             if baseline_exists:
-                if not project_path.exists() or project_path.read_bytes() != baseline_bytes:
+                if (
+                    not project_path.exists()
+                    or project_path.read_bytes() != baseline_bytes
+                ):
                     conflicts.append(str(rel))
                     continue
             elif project_path.exists() and project_path.read_bytes() != workspace_bytes:
@@ -598,8 +634,8 @@ def list_sandbox_files(pattern: str = "") -> str:
                 rel_path = item.relative_to(sandbox.workspace)
                 if not pattern or pattern.lower() in str(rel_path).lower():
                     files.append(str(rel_path))
-    except Exception as e:
-        return f"ERROR listing draft files: {e}"
+    except OSError as exc:
+        return f"ERROR listing draft files: {exc}"
 
     if not files:
         return "Draft workspace is empty."
@@ -628,7 +664,9 @@ def review_changes() -> str:
     return "\n".join(summary)
 
 
-def sync_workspace_to_sandbox(project_root: Path | None = None, verbose: bool = False) -> str:
+def sync_workspace_to_sandbox(
+    project_root: Path | None = None, verbose: bool = False
+) -> str:
     """No-op stub retained for API compatibility."""
     return "Draft workspace is initialized at task start. No manual sync needed."
 
@@ -677,17 +715,26 @@ def pending_change_diff() -> list[str]:
     for rel in sorted(baseline_files | workspace_files):
         baseline_path = sandbox.baseline / rel
         workspace_path = sandbox.workspace / rel
-        before = baseline_path.read_text(encoding="utf-8", errors="replace") if rel in baseline_files else ""
-        after = workspace_path.read_text(encoding="utf-8", errors="replace") if rel in workspace_files else ""
+        before = (
+            baseline_path.read_text(encoding="utf-8", errors="replace")
+            if rel in baseline_files
+            else ""
+        )
+        after = (
+            workspace_path.read_text(encoding="utf-8", errors="replace")
+            if rel in workspace_files
+            else ""
+        )
         if before == after:
             continue
         lines.extend(_make_patch_preview(str(rel), before, after))
     return lines
 
+
 def undo_workspace(
     steps: int,
     session_id: str,
-    store: "SessionStore",  # type: ignore[name-defined]  # imported at call site
+    store: SessionStore,  # type: ignore[name-defined]  # imported at call site
 ) -> tuple[bool, str]:
     """Restore the sandbox workspace to the state *steps* turns ago.
 
@@ -713,8 +760,10 @@ def undo_workspace(
         available = len(store.list_checkpoints_for_session(session_id))
         return (
             False,
-            f"No checkpoint found {steps} turn{'s' if steps != 1 else ''} ago. "
-            f"Only {available} checkpoint{'s are' if available != 1 else ' is'} available.",
+            (
+                f"No checkpoint found {steps} turn{'s' if steps != 1 else ''} ago. "
+                f"Only {available} checkpoint{'s are' if available != 1 else ' is'} available."
+            ),
         )
 
     try:
@@ -728,9 +777,13 @@ def undo_workspace(
     n = steps
     parts: list[str] = []
     if result["restored"]:
-        parts.append(f"restored {result['restored']} file{'s' if result['restored'] != 1 else ''}")
+        parts.append(
+            f"restored {result['restored']} file{'s' if result['restored'] != 1 else ''}"
+        )
     if result["removed"]:
-        parts.append(f"removed {result['removed']} file{'s' if result['removed'] != 1 else ''}")
+        parts.append(
+            f"removed {result['removed']} file{'s' if result['removed'] != 1 else ''}"
+        )
     if result["unchanged"]:
         parts.append(f"{result['unchanged']} unchanged")
 

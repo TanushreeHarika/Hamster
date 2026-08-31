@@ -37,6 +37,7 @@ Public API
     store.delete_checkpoint(ckpt_id)
     store.gc_blobs()   # delete unreferenced blobs
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -49,13 +50,22 @@ from typing import Any
 DEFAULT_BASE: Path = Path.home() / ".hamster" / "checkpoints"
 
 # Directories to skip when snapshotting the workspace
-_IGNORE_DIRS: frozenset[str] = frozenset({
-    ".git", ".hg", ".svn",
-    ".venv", "venv",
-    "__pycache__",
-    ".mypy_cache", ".ruff_cache", ".pytest_cache",
-    "node_modules", "dist", "build",
-})
+_IGNORE_DIRS: frozenset[str] = frozenset(
+    {
+        ".git",
+        ".hg",
+        ".svn",
+        ".venv",
+        "venv",
+        "__pycache__",
+        ".mypy_cache",
+        ".ruff_cache",
+        ".pytest_cache",
+        "node_modules",
+        "dist",
+        "build",
+    }
+)
 
 
 def _sha256(data: bytes) -> str:
@@ -254,12 +264,14 @@ class CheckpointStore:
             except (json.JSONDecodeError, OSError):
                 continue
             if data.get("session_id") == session_id:
-                results.append({
-                    "checkpoint_id": data["checkpoint_id"],
-                    "session_id": data["session_id"],
-                    "turn_index": data.get("turn_index", 0),
-                    "file_count": len(data.get("files", {})),
-                })
+                results.append(
+                    {
+                        "checkpoint_id": data["checkpoint_id"],
+                        "session_id": data["session_id"],
+                        "turn_index": data.get("turn_index", 0),
+                        "file_count": len(data.get("files", {})),
+                    }
+                )
         results.sort(key=lambda d: d["turn_index"])
         return results
 

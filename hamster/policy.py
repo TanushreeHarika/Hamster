@@ -4,13 +4,14 @@ Contains a minimal `SecurityPolicyEngine` and `CommandASTAnalyzer` to be
 implemented further. These are intentionally lightweight stubs so the rest of
 the codebase can import and evolve them incrementally.
 """
+
 from __future__ import annotations
 
-import re
 import math
+import re
 import shlex
 from dataclasses import dataclass
-from typing import Any, Dict, Iterable, List
+from typing import Any, ClassVar
 
 
 @dataclass
@@ -27,8 +28,8 @@ class SecurityPolicyEngine:
     """
 
     def __init__(self) -> None:
-        self._capabilities: Dict[str, set[str]] = {}
-        self._binary_whitelist: Dict[str, set[str]] = {}
+        self._capabilities: dict[str, set[str]] = {}
+        self._binary_whitelist: dict[str, set[str]] = {}
 
     def allow(self, subject: str, capability: str) -> None:
         self._capabilities.setdefault(subject, set()).add(capability)
@@ -38,7 +39,9 @@ class SecurityPolicyEngine:
 
     def check(self, subject: str, capability: str) -> PolicyDecision:
         allowed = capability in self._capabilities.get(subject, set())
-        return PolicyDecision(allowed=allowed, reason=None if allowed else "denied by default")
+        return PolicyDecision(
+            allowed=allowed, reason=None if allowed else "denied by default"
+        )
 
     def allow_binary(self, subject: str, binary: str) -> None:
         self._binary_whitelist.setdefault(subject, set()).add(binary)
@@ -58,22 +61,26 @@ class CommandASTAnalyzer:
     """
 
     # Patterns considered immediate violations
-    VIOLATION_PATTERNS: List[re.Pattern] = [
+    VIOLATION_PATTERNS: ClassVar[tuple[re.Pattern[str], ...]] = (
         re.compile(r"(^|[;&|]\s*)sudo(\s|$)", re.IGNORECASE),
         re.compile(r"\brm\s+-rf\b", re.IGNORECASE),
         re.compile(r"\b(chmod|chown|su|setuid)\b", re.IGNORECASE),
         re.compile(r"\bdd\b[^;&|]*\bif=/", re.IGNORECASE),
         re.compile(r"\b(mkfs|wipefs)\b", re.IGNORECASE),
-    ]
+    )
 
     # Patterns that are suspicious and may need consent
-    SUSPICIOUS_PATTERNS: List[re.Pattern] = [
+    SUSPICIOUS_PATTERNS: ClassVar[tuple[re.Pattern[str], ...]] = (
         re.compile(r"\$\(|`"),  # subshells
-        re.compile(r"(curl|wget|fetch)[^|]*\|\s*(sh|bash|zsh|python|python3)\b", re.IGNORECASE),
-        re.compile(r"base64\s+-d[^;&|]*\|\s*(sh|bash|zsh|python|python3)\b", re.IGNORECASE),
+        re.compile(
+            r"(curl|wget|fetch)[^|]*\|\s*(sh|bash|zsh|python|python3)\b", re.IGNORECASE
+        ),
+        re.compile(
+            r"base64\s+-d[^;&|]*\|\s*(sh|bash|zsh|python|python3)\b", re.IGNORECASE
+        ),
         re.compile(r"/dev/(sd|mmcblk|nvme|zero|tty)"),
         re.compile(r"/dev/tcp"),
-    ]
+    )
 
     # Heuristic for high-entropy tokens (possible secrets or encoded payloads)
     LONG_BASE64_RE = re.compile(r"[A-Za-z0-9+/=]{40,}")
@@ -83,14 +90,44 @@ class CommandASTAnalyzer:
     # the analysis output as an advisory note (but not blocked outright;
     # blocking is still done via VIOLATION_PATTERNS and the regex blacklist
     # in tools.py).
-    ALLOWED_BINARIES: frozenset[str] = frozenset({
-        "git", "python", "python3", "pytest", "uv", "pip", "pip3",
-        "npm", "npx", "node", "yarn",
-        "rg", "grep", "find", "ls", "cat", "head", "tail", "wc",
-        "echo", "printf", "pwd", "env", "which", "type",
-        "mkdir", "touch", "diff", "sort", "uniq", "cut",
-        "true", "false", "test",
-    })
+    ALLOWED_BINARIES: frozenset[str] = frozenset(
+        {
+            "git",
+            "python",
+            "python3",
+            "pytest",
+            "uv",
+            "pip",
+            "pip3",
+            "npm",
+            "npx",
+            "node",
+            "yarn",
+            "rg",
+            "grep",
+            "find",
+            "ls",
+            "cat",
+            "head",
+            "tail",
+            "wc",
+            "echo",
+            "printf",
+            "pwd",
+            "env",
+            "which",
+            "type",
+            "mkdir",
+            "touch",
+            "diff",
+            "sort",
+            "uniq",
+            "cut",
+            "true",
+            "false",
+            "test",
+        }
+    )
 
     @staticmethod
     def _shannon_entropy(s: str) -> float:
@@ -122,9 +159,14 @@ class CommandASTAnalyzer:
         return bool(parts) and parts[0] in cls.ALLOWED_BINARIES
 
     @classmethod
-    def analyze(cls, command: str) -> Dict[str, Any]:
+    def analyze(cls, command: str) -> dict[str, Any]:
         raw = command or ""
-        findings: Dict[str, Any] = {"raw": raw, "violations": [], "suspects": [], "notes": []}
+        findings: dict[str, Any] = {
+            "raw": raw,
+            "violations": [],
+            "suspects": [],
+            "notes": [],
+        }
 
         if not raw.strip():
             findings["violations"].append("empty_command")
@@ -153,7 +195,7 @@ class CommandASTAnalyzer:
         try:
             parts = shlex.split(raw)
             primary = parts[0] if parts else ""
-        except Exception:
+        except ValueError:
             primary = ""
         # Advisory whitelist note — does not affect the "safe" flag
         if primary and primary not in cls.ALLOWED_BINARIES:
