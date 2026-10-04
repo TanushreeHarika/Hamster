@@ -3,7 +3,7 @@ import json
 import sys
 from pathlib import Path
 
-from hamster.agent import initial_messages, run_agent_turn
+from hamster.agent import TurnOutcome, initial_messages, run_agent_turn
 from hamster.checkpoint import CheckpointStore
 from hamster.config import load_config
 from hamster.openrouter import OpenRouterClient
@@ -294,7 +294,7 @@ def main(
         turn_index += 1
 
         messages.append({"role": "user", "content": user_input})
-        run_agent_turn(client, messages, config.max_failures)
+        outcome = run_agent_turn(client, messages, config.max_failures)
 
         # --- Persist the full updated message history after every turn ---
         store.save_messages(persist_session_id, messages)
@@ -306,9 +306,21 @@ def main(
             ),  # rough proxy; replace with real token count if available
         )
 
+        if isinstance(outcome, TurnOutcome) and outcome.validation_blocked:
+            print(
+                "Validation failed, so these draft changes were not offered for saving. "
+                "Ask Hamster to fix the reported issues or use /pending to inspect them.\n"
+            )
+            continue
+
         if has_pending_sandbox_changes():
+            validation_status = (
+                outcome.review_status() if isinstance(outcome, TurnOutcome) else None
+            )
             decision = request_save_changes(
-                pending_change_summary(), pending_change_diff()
+                pending_change_summary(),
+                pending_change_diff(),
+                validation_status=validation_status,
             )
             if decision == "accept":
                 print(f"{apply_sandbox_to_root(project_root=project_root)}\n")

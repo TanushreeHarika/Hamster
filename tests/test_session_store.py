@@ -216,6 +216,28 @@ class TestMessagePersistence(unittest.TestCase):
             self.assertEqual(m["name"], "write_file")
             self.assertEqual(m["tool_call_id"], "call_abc123")
 
+    def test_assistant_tool_calls_roundtrip(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = _make_store(tmp)
+            self.addCleanup(store.close)
+            sid = store.create_session()
+            assistant_msg = {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "call_abc123",
+                        "type": "function",
+                        "function": {
+                            "name": "read_file",
+                            "arguments": '{"filepath":"src/app.py"}',
+                        },
+                    }
+                ],
+            }
+            store.save_messages(sid, [assistant_msg])
+            self.assertEqual(store.load_messages(sid), [assistant_msg])
+
     def test_resume_restores_full_conversation(self) -> None:
         """Full resume cycle: save messages, close store, reopen, load messages."""
         with tempfile.TemporaryDirectory() as tmp:

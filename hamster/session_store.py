@@ -22,6 +22,7 @@ Schema
     content      TEXT            -- text content of the message
     tool_name    TEXT            -- present for role="tool" messages
     tool_call_id TEXT            -- present for role="tool" messages
+    tool_calls   TEXT            -- JSON-encoded assistant tool calls, when present
     inserted_at  TEXT NOT NULL   -- ISO-8601 UTC
 
 Public API
@@ -105,6 +106,7 @@ class SessionStore:
                 content      TEXT,
                 tool_name    TEXT,
                 tool_call_id TEXT,
+                tool_calls   TEXT,
                 inserted_at  TEXT NOT NULL
             );
 
@@ -123,6 +125,13 @@ class SessionStore:
                 ON checkpoints(session_id, turn_index);
             """
         )
+        message_columns = {
+            row["name"]
+            for row in self._conn.execute("PRAGMA table_info(messages)").fetchall()
+        }
+        if "tool_calls" not in message_columns:
+            self._conn.execute("ALTER TABLE messages ADD COLUMN tool_calls TEXT")
+            self._conn.commit()
         self._conn.commit()
 
     # ------------------------------------------------------------------
@@ -215,12 +224,22 @@ class SessionStore:
             content = json.dumps(content)
         tool_name = message.get("name")
         tool_call_id = message.get("tool_call_id")
+        tool_calls = message.get("tool_calls")
         self._conn.execute(
             """
-            INSERT INTO messages (session_id, role, content, tool_name, tool_call_id, inserted_at)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO messages (
+                session_id, role, content, tool_name, tool_call_id, tool_calls, inserted_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
-            (session_id, role, content, tool_name, tool_call_id, _now_iso()),
+            (
+                session_id,
+                role,
+                content,
+                tool_name,
+                tool_call_id,
+                json.dumps(tool_calls) if tool_calls is not None else None,
+                _now_iso(),
+            ),
         )
         self._conn.commit()
 
@@ -246,11 +265,23 @@ class SessionStore:
                 content = json.dumps(content)
             tool_name = msg.get("name")
             tool_call_id = msg.get("tool_call_id")
-            rows.append((session_id, role, content, tool_name, tool_call_id, now))
+            tool_calls = msg.get("tool_calls")
+            rows.append(
+                (
+                    session_id,
+                    role,
+                    content,
+                    tool_name,
+                    tool_call_id,
+                    json.dumps(tool_calls) if tool_calls is not None else None,
+                    now,
+                )
+            )
         self._conn.executemany(
             """
-            INSERT INTO messages (session_id, role, content, tool_name, tool_call_id, inserted_at)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO messages (
+                session_id, role, content, tool_name, tool_call_id, tool_calls, inserted_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
             rows,
         )
@@ -270,7 +301,7 @@ class SessionStore:
         """
         rows = self._conn.execute(
             """
-            SELECT role, content, tool_name, tool_call_id
+            SELECT role, content, tool_name, tool_call_id, tool_calls
             FROM messages
             WHERE session_id = ?
             ORDER BY id ASC
@@ -296,6 +327,8 @@ class SessionStore:
                 msg["name"] = row["tool_name"]
             if row["tool_call_id"]:
                 msg["tool_call_id"] = row["tool_call_id"]
+            if row["tool_calls"]:
+                msg["tool_calls"] = json.loads(row["tool_calls"])
             messages.append(msg)
         return messages
 

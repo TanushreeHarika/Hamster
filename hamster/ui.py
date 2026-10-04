@@ -413,12 +413,16 @@ def render_security_violation(message: str) -> None:
     )
 
 
-def request_save_changes(changes: list[str], diff_lines: list[str]) -> str:
+def request_save_changes(
+    changes: list[str], diff_lines: list[str], validation_status: str | None = None
+) -> str:
     body = "\n".join(
-        ["I drafted the changes. Looking good from here.", "", *changes[:20]]
+        ["I drafted the changes. Please review them before saving.", "", *changes[:20]]
     )
     if len(changes) > 20:
         body += f"\n... and {len(changes) - 20} more"
+    if validation_status:
+        body += f"\n\nValidation: {validation_status}"
     body += "\n\nSave everything, discard everything, or peek at the diff first."
 
     options = Table.grid(padding=(0, 1))

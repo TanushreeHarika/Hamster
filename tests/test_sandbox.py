@@ -88,6 +88,36 @@ class TestSandbox(unittest.TestCase):
             self.mock_file.read_text(encoding="utf-8"), 'APP_NAME = "hamster-legacy"\n'
         )
 
+    def test_ambiguous_exact_patch_does_not_modify_file(self):
+        original = 'APP_NAME = "hamster-legacy"\nAPP_NAME = "hamster-legacy"\n'
+        staged_file = self.sandbox.workspace / "mock_config.py"
+        staged_file.write_text(original, encoding="utf-8")
+
+        result = edit_file_patch(
+            "mock_config.py", 'APP_NAME = "hamster-legacy"', 'APP_NAME = "hamster"'
+        )
+
+        self.assertIn("ERROR: Ambiguous patch", result)
+        self.assertIn("2 exact matches", result)
+        self.assertEqual(staged_file.read_text(encoding="utf-8"), original)
+
+    def test_ambiguous_fuzzy_patch_does_not_modify_file(self):
+        original = (
+            "APP_NAME = 'old'\nAPP_NAME = 'old'\n"
+            "APP_NAME = 'old'\nAPP_NAME = 'old'\n"
+        )
+        staged_file = self.sandbox.workspace / "mock_config.py"
+        staged_file.write_text(original, encoding="utf-8")
+
+        result = edit_file_patch(
+            "mock_config.py",
+            "APP_NAME = 'old'  \nAPP_NAME = 'old'  \n",
+            "APP_NAME = 'new'\n",
+        )
+
+        self.assertIn("ERROR: Ambiguous whitespace-normalized patch", result)
+        self.assertEqual(staged_file.read_text(encoding="utf-8"), original)
+
     def test_editing_does_not_prompt_per_change(self):
         with patch("hamster.tools.confirm") as mocked_confirm:
             res = edit_file_patch(
@@ -100,9 +130,14 @@ class TestSandbox(unittest.TestCase):
     def test_missing_patch_target_is_recoverable_tool_result(self):
         res = edit_file_patch("mock_config.py", "DOES_NOT_EXIST", "replacement")
 
-        self.assertIn("Target text was not found", res)
+        self.assertIn("ERROR: Target text was not found", res)
         self.assertIn("use write_file", res)
-        self.assertFalse(res.startswith("ERROR"))
+        self.assertTrue(res.startswith("ERROR:"))
+
+    def test_missing_patch_file_uses_standard_error_prefix(self):
+        res = edit_file_patch("missing.py", "old", "new")
+
+        self.assertTrue(res.startswith("ERROR: File not found:"))
 
     def test_new_file_creation(self):
         # Creating a new file should put it in the workspace

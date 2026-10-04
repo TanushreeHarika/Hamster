@@ -224,16 +224,43 @@ def _try_fuzzy_replace(
     if not tgt_stripped or all(s == "" for s in tgt_stripped):
         return None
 
-    for i in range(len(orig_lines) - tgt_len + 1):
-        window = [line.rstrip("\r\n").rstrip() for line in orig_lines[i : i + tgt_len]]
-        if window == tgt_stripped:
-            before = "".join(orig_lines[:i])
-            after = "".join(orig_lines[i + tgt_len :])
-            rep = replacement_text
-            # Ensure the replacement ends with a newline when there is more content
-            if after and not rep.endswith("\n"):
-                rep += "\n"
-            return before + rep + after
+    matches = [
+        i
+        for i in range(len(orig_lines) - tgt_len + 1)
+        if [
+            line.rstrip("\r\n").rstrip()
+            for line in orig_lines[i : i + tgt_len]
+        ]
+        == tgt_stripped
+    ]
+    if len(matches) != 1:
+        return None
+
+    i = matches[0]
+    before = "".join(orig_lines[:i])
+    after = "".join(orig_lines[i + tgt_len :])
+    rep = replacement_text
+    if after and not rep.endswith("\n"):
+        rep += "\n"
+    return before + rep + after
+
+
+def _count_fuzzy_matches(original: str, target_text: str) -> int:
+    original_n = original.replace("\r\n", "\n").replace("\r", "\n")
+    target_n = target_text.replace("\r\n", "\n").replace("\r", "\n")
+    original_lines = original_n.splitlines(keepends=True)
+    target_lines = [line.rstrip() for line in target_n.splitlines()]
+    if not target_lines or all(not line for line in target_lines):
+        return 0
+
+    return sum(
+        [
+            line.rstrip("\r\n").rstrip()
+            for line in original_lines[index : index + len(target_lines)]
+        ]
+        == target_lines
+        for index in range(len(original_lines) - len(target_lines) + 1)
+    )
 
     return None
 
@@ -255,9 +282,13 @@ def run_sandbox_command(command: str) -> str:
     sandbox = _get_sandbox()
     with sandbox_status("🖥️  Running command..."):
         result = execute_sandboxed(command, cwd=str(sandbox.workspace))
-    return (
-        result.stdout + result.stderr
-    ).strip() or f"Command exited with {result.returncode}."
+    output = (result.stdout + result.stderr).strip()
+    if result.returncode:
+        return (
+            f"ERROR: Command exited with status {result.returncode}."
+            + (f"\n{output}" if output else "")
+        )
+    return output or f"Command exited with {result.returncode}."
 
 
 def search_codebase(query: str) -> str:
@@ -354,7 +385,9 @@ def read_file(
         return f"<untrusted_content>\n{out}\n</untrusted_content>"
 
     except FileNotFoundError as exc:
-        return f"File not found: {exc}"
+        return f"ERROR: File not found: {exc}"
+    except (OSError, UnicodeDecodeError) as exc:
+        return f"ERROR: Could not read {filepath}: {type(exc).__name__}: {exc}"
 
 
 def edit_file_patch(filepath: str, target_text: str, replacement_text: str) -> str:
@@ -376,19 +409,30 @@ def edit_file_patch(filepath: str, target_text: str, replacement_text: str) -> s
         with sandbox_status("📋 Opening file..."):
             staged = _stage_file_to_sandbox(filepath)
     except FileNotFoundError:
-        return f"File not found: {filepath}"
+        return f"ERROR: File not found: {filepath}"
 
     original = Path(staged).read_text(encoding="utf-8")
 
     # --- Exact match (primary path, preserves all existing behaviour) --------
     if target_text in original:
         replaced_count = original.count(target_text)
-        updated = original.replace(target_text, replacement_text)
+        if replaced_count != 1:
+            return (
+                f"ERROR: Ambiguous patch for {filepath}: found {replaced_count} exact "
+                "matches. No changes were made; provide a unique target block."
+            )
+        updated = original.replace(target_text, replacement_text, 1)
         with sandbox_status("✏️  Updating file..."):
             Path(staged).write_text(updated, encoding="utf-8")
-        return f"Updated {filepath}: replaced {replaced_count} occurrence{'s' if replaced_count != 1 else ''}."
+        return f"Updated {filepath}: replaced 1 occurrence."
 
     # --- Fuzzy match (trailing-whitespace-tolerant fallback) ------------------
+    fuzzy_count = _count_fuzzy_matches(original, target_text)
+    if fuzzy_count > 1:
+        return (
+            f"ERROR: Ambiguous whitespace-normalized patch for {filepath}: found "
+            f"{fuzzy_count} matches. No changes were made; provide a unique target block."
+        )
     fuzzy_result = _try_fuzzy_replace(original, target_text, replacement_text)
     if fuzzy_result is not None:
         with sandbox_status("✏️  Updating file (fuzzy match)..."):
@@ -398,7 +442,7 @@ def edit_file_patch(filepath: str, target_text: str, replacement_text: str) -> s
         )
 
     return (
-        f"Target text was not found in {filepath}. "
+        f"ERROR: Target text was not found in {filepath}. "
         "For broad rewrites, read the current file and use write_file with the full updated content."
     )
 
@@ -412,7 +456,7 @@ def write_file(filepath: str, content: str) -> str:
             dest.write_text(content, encoding="utf-8")
         return f"Wrote {filepath}."
     except (OSError, ValueError, TypeError) as exc:
-        return f"Error creating file {filepath}: {exc}"
+        return f"ERROR: Could not create or write {filepath}: {type(exc).__name__}: {exc}"
 
 
 def delete_file(filepath: str) -> str:
@@ -442,11 +486,11 @@ def delete_file(filepath: str) -> str:
 
     staged = Path(absolute_path)
     if not staged.exists():
-        return f"File not found in draft workspace: {filepath}"
+        return f"ERROR: File not found in draft workspace: {filepath}"
 
     if staged.is_dir():
         return (
-            f"'{filepath}' is a directory. Use delete_file only for individual files."
+            f"ERROR: '{filepath}' is a directory. Use delete_file only for individual files."
         )
 
     with sandbox_status(f"🗑️  Deleting {filepath}..."):

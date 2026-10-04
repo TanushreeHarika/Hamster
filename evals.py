@@ -7,22 +7,27 @@
 # ]
 # ///
 """
-Hamster Offline Evaluation Harness
+Hamster Model and End-to-End Evaluation Harness
 ===================================
 Run with:  uv run evals.py [--limit N]
 
-Each test case sends a deterministic prompt directly to the OpenRouter API
-and inspects the first tool call the model produces (or its text reply) to
-decide pass / fail — **no interactive approval gates are triggered**.
+Tool-selection cases inspect the first model response. The full-application
+case executes a complete tool-call turn in a temporary workspace, persists and
+reloads its message history, and checks the generated app plus JavaScript syntax.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import re
+import shlex
+import subprocess
 import sys
+import tempfile
 import time
 from dataclasses import dataclass
+from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any
 
@@ -35,6 +40,11 @@ from rich.rule import Rule
 from rich.table import Table
 from rich.text import Text
 
+from hamster.agent import SYSTEM_PROMPT
+from hamster.session_store import SessionStore
+from hamster.tools import TOOL_SCHEMAS
+from src.context import compact_context
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Config
 # ──────────────────────────────────────────────────────────────────────────────
@@ -42,64 +52,6 @@ from rich.text import Text
 OPENROUTER_CHAT_URL = "https://openrouter.ai/api/v1/chat/completions"
 PROJECT_ROOT = Path(__file__).parent
 ENV_PATH = PROJECT_ROOT / ".env"
-
-SYSTEM_PROMPT = (
-    "You are Hamster, a production-grade CLI software engineering agent. "
-    "Your file tools are restricted to the current project and security violations are non-negotiable. "
-    "Never claim to have inspected files unless you used read_file or search_codebase. "
-    "Prefer small, surgical edits through edit_file_patch. "
-    "If a tool returns an error or SECURITY VIOLATION, adjust your next step."
-)
-
-TOOL_SCHEMAS: list[dict[str, Any]] = [
-    {
-        "type": "function",
-        "function": {
-            "name": "search_codebase",
-            "description": "Search for string matches inside the current project only.",
-            "parameters": {
-                "type": "object",
-                "properties": {"query": {"type": "string"}},
-                "required": ["query"],
-                "additionalProperties": False,
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "read_file",
-            "description": "Read a specific project file by relative path.",
-            "parameters": {
-                "type": "object",
-                "properties": {"filepath": {"type": "string"}},
-                "required": ["filepath"],
-                "additionalProperties": False,
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "edit_file_patch",
-            "description": "Replace one exact target text block inside a project file.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "filepath": {"type": "string"},
-                    "target_text": {"type": "string"},
-                    "replacement_text": {"type": "string"},
-                },
-                "required": ["filepath", "target_text", "replacement_text"],
-                "additionalProperties": False,
-            },
-        },
-    },
-]
-
-# ──────────────────────────────────────────────────────────────────────────────
-# .env reader (minimal, no hamster package import)
-# ──────────────────────────────────────────────────────────────────────────────
 
 
 def _load_env(path: Path) -> dict[str, str]:
@@ -213,6 +165,7 @@ class EvalCase:
     description: str
     prompt: str
     check: Any  # callable(tool_call | None, text: str) -> (bool, str)
+    full_turn: bool = False
     result_passed: bool = False
     result_detail: str = ""
     result_tool_used: str = ""
@@ -303,6 +256,263 @@ def _check_search_execution(tool_call: dict | None, text: str) -> tuple[bool, st
     return False, f"No tool call produced. Reply: {text[:120]!r}"
 
 
+class _MarkupInspector(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__()
+        self.tags: list[tuple[str, dict[str, str | None]]] = []
+        self.labels: set[str] = set()
+        self.controls: list[dict[str, str | None]] = []
+        self.buttons: list[tuple[dict[str, str | None], str]] = []
+        self.active_button: int | None = None
+
+    def handle_starttag(
+        self, tag: str, attrs: list[tuple[str, str | None]]
+    ) -> None:
+        attributes = dict(attrs)
+        self.tags.append((tag, attributes))
+        if tag == "label" and attributes.get("for"):
+            self.labels.add(attributes["for"] or "")
+        if tag in {"input", "select", "textarea"}:
+            self.controls.append(attributes)
+        if tag == "button":
+            self.buttons.append((attributes, ""))
+            self.active_button = len(self.buttons) - 1
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag == "button":
+            self.active_button = None
+
+    def handle_data(self, data: str) -> None:
+        if self.active_button is not None:
+            attrs, text = self.buttons[self.active_button]
+            self.buttons[self.active_button] = (attrs, text + data)
+
+
+def _check_application_quality(
+    workspace: Path,
+    messages: list[dict[str, Any]],
+    build_verified: bool,
+) -> tuple[bool, str]:
+    failures: list[str] = []
+    required_files = ("index.html", "styles.css", "app.js")
+    if any(not (workspace / name).is_file() for name in required_files):
+        return False, "Expected separated index.html, styles.css, and app.js files."
+
+    markup = (workspace / "index.html").read_text(encoding="utf-8")
+    styles = (workspace / "styles.css").read_text(encoding="utf-8")
+    script = (workspace / "app.js").read_text(encoding="utf-8")
+    parser = _MarkupInspector()
+    parser.feed(markup)
+    tags = {tag for tag, _ in parser.tags}
+    attrs = [attributes for _, attributes in parser.tags]
+
+    if not re.search(r"<!doctype\s+html", markup, re.IGNORECASE):
+        failures.append("HTML5 doctype missing")
+    if "main" not in tags or "h1" not in tags:
+        failures.append("semantic main landmark or page heading missing")
+    if not any(
+        (item.get("name") or "").lower() == "viewport" for item in attrs
+    ):
+        failures.append("responsive viewport meta missing")
+    if not any(
+        (item.get("rel") or "").lower() == "stylesheet"
+        and item.get("href", "") == "styles.css"
+        for item in attrs
+    ):
+        failures.append("styles.css is not linked")
+    if not any(item.get("src") == "app.js" for item in attrs):
+        failures.append("app.js is not linked")
+    if any(
+        not (control.get("aria-label") or control.get("id") in parser.labels)
+        for control in parser.controls
+    ):
+        failures.append("form controls lack an accessible label")
+    if any(
+        not (button.get("aria-label") or text.strip())
+        for button, text in parser.buttons
+    ):
+        failures.append("one or more buttons lack an accessible name")
+    button_names = " ".join(
+        (button.get("aria-label") or "") + " " + text
+        for button, text in parser.buttons
+    ).lower()
+    if any(name not in button_names for name in ("start", "pause", "reset")):
+        failures.append("start, pause, and reset controls are incomplete")
+    if not re.search(r"@media\s*\([^)]*(?:min|max)-width", styles, re.IGNORECASE):
+        failures.append("responsive CSS media query missing")
+    if not re.search(r"\.addEventListener\s*\(", script):
+        failures.append("interactive event handling missing")
+    if not re.search(r"\bsetInterval\s*\(", script) or not re.search(
+        r"\bclearInterval\s*\(", script
+    ):
+        failures.append("timer start/pause interval handling missing")
+    if not re.search(r"(?:25\s*\*\s*60|1500)\b", script):
+        failures.append("25-minute timer duration missing")
+    if "localStorage" not in script:
+        failures.append("requested local persistence missing")
+    if re.search(r"\b(?:TODO|Lorem ipsum|coming soon)\b", markup + styles + script, re.I):
+        failures.append("placeholder content remains")
+    if not build_verified:
+        failures.append("node --check build verification did not pass")
+
+    pending_calls: set[str] = set()
+    malformed_history = False
+    for message in messages:
+        if message.get("role") == "assistant":
+            pending_calls.update(
+                call.get("id")
+                for call in message.get("tool_calls", [])
+                if call.get("id")
+            )
+        elif message.get("role") == "tool":
+            call_id = message.get("tool_call_id")
+            if not call_id or call_id not in pending_calls:
+                malformed_history = True
+            else:
+                pending_calls.remove(call_id)
+    if malformed_history or pending_calls:
+        failures.append("full-turn tool-call/result history is incomplete")
+    if not any(msg.get("role") == "system" for msg in messages) or not any(
+        msg.get("role") == "user" for msg in messages
+    ):
+        failures.append("system prompt or user request was lost from full-turn history")
+
+    if failures:
+        return False, "; ".join(failures)
+    return True, "Responsive, accessible multi-file app passed interaction, persistence, build, and history checks."
+
+
+def _safe_quality_path(workspace: Path, filepath: str) -> Path:
+    if not filepath or Path(filepath).is_absolute():
+        raise ValueError("filepath must be project-relative")
+    path = (workspace / filepath).resolve()
+    if path != workspace.resolve() and workspace.resolve() not in path.parents:
+        raise ValueError("filepath escapes the evaluation workspace")
+    return path
+
+
+def _execute_quality_tool(
+    tool_call: dict[str, Any], workspace: Path
+) -> tuple[dict[str, Any], bool]:
+    function = tool_call.get("function", {})
+    name = function.get("name", "")
+    try:
+        arguments = json.loads(function.get("arguments") or "{}")
+        filepath = arguments.get("filepath", "")
+        if name in {"write_file", "read_file", "edit_file_patch"}:
+            path = _safe_quality_path(workspace, filepath)
+            if name == "write_file":
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(arguments["content"], encoding="utf-8")
+                result = f"Wrote {filepath}."
+            elif name == "read_file":
+                result = path.read_text(encoding="utf-8")
+            else:
+                original = path.read_text(encoding="utf-8")
+                target = arguments["target_text"]
+                count = original.count(target)
+                if count != 1:
+                    raise ValueError(
+                        f"Patch requires one exact match; found {count}. No changes made."
+                    )
+                path.write_text(
+                    original.replace(target, arguments["replacement_text"], 1),
+                    encoding="utf-8",
+                )
+                result = f"Updated {filepath}."
+        elif name == "run_sandbox_command":
+            command = shlex.split(arguments.get("command", ""))
+            if (
+                len(command) != 3
+                or command[:2] != ["node", "--check"]
+                or Path(command[2]).suffix not in {".js", ".mjs", ".cjs"}
+                or command[2].startswith("-")
+            ):
+                raise ValueError(
+                    "Evaluation permits only `node --check <project-relative-js-file>`."
+                )
+            path = _safe_quality_path(workspace, command[2])
+            checked = subprocess.run(
+                ["node", "--check", str(path)],
+                cwd=workspace,
+                capture_output=True,
+                text=True,
+                timeout=30,
+                check=False,
+            )
+            if checked.returncode:
+                detail = (checked.stdout + checked.stderr).strip()
+                result = f"ERROR: Build verification failed with status {checked.returncode}.\n{detail}"
+            else:
+                result = f"Build verification passed: node --check {command[2]}."
+        else:
+            raise ValueError(f"Unsupported evaluation tool: {name}")
+    except (
+        KeyError,
+        json.JSONDecodeError,
+        OSError,
+        subprocess.SubprocessError,
+        TypeError,
+        ValueError,
+    ) as exc:
+        result = f"ERROR: {type(exc).__name__}: {exc}"
+
+    tool_message = {
+        "role": "tool",
+        "tool_call_id": tool_call.get("id", f"call_{name}"),
+        "name": name,
+        "content": result,
+    }
+    return tool_message, name == "run_sandbox_command" and not result.startswith("ERROR:")
+
+
+def _run_application_quality_eval(
+    api_key: str, model: str, prompt: str, max_tokens: int
+) -> tuple[bool, str, list[dict[str, Any]]]:
+    with tempfile.TemporaryDirectory(prefix="hamster-quality-eval-") as tmp:
+        workspace = Path(tmp)
+        store = SessionStore(path=workspace / "session.db")
+        try:
+            session_id = store.create_session(working_dir=str(workspace))
+            messages: list[dict[str, Any]] = [
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": prompt},
+            ]
+            build_verified = False
+
+            for _ in range(12):
+                messages[:] = compact_context(
+                    messages, token_budget=8000, tool_schemas=TOOL_SCHEMAS
+                )
+                response = _call_openrouter(
+                    api_key, model, messages, max_tokens=max_tokens
+                )
+                choices = response.get("choices") or []
+                if not choices:
+                    raise ValueError("Model returned no choices during full-turn eval.")
+                assistant_message = choices[0].get("message") or {}
+                messages.append(assistant_message)
+                tool_calls = assistant_message.get("tool_calls") or []
+                if not tool_calls:
+                    store.save_messages(session_id, messages)
+                    messages[:] = store.load_messages(session_id)
+                    return (
+                        *_check_application_quality(workspace, messages, build_verified),
+                        messages,
+                    )
+
+                for call in tool_calls:
+                    result, verified = _execute_quality_tool(call, workspace)
+                    build_verified = build_verified or verified
+                    messages.append(result)
+                store.save_messages(session_id, messages)
+                messages[:] = store.load_messages(session_id)
+
+            return False, "Full-turn eval exceeded 12 model/tool rounds.", messages
+        finally:
+            store.close()
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Test case registry
 # ──────────────────────────────────────────────────────────────────────────────
@@ -336,6 +546,25 @@ ALL_CASES: list[EvalCase] = [
             "Please search for it using your search_codebase tool."
         ),
         check=_check_search_execution,
+    ),
+    EvalCase(
+        name="D · Full Application Quality",
+        description=(
+            "Complete a responsive accessible app, verify JavaScript syntax, "
+            "and preserve tool history across a full turn"
+        ),
+        prompt=(
+            "Build a polished, dependency-free focus-session dashboard as a complete "
+            "static web app in index.html, styles.css, and app.js. Use semantic, "
+            "accessible markup and clearly named controls; create a considered visual "
+            "system and responsive mobile/desktop layouts. The app must let a user "
+            "start, pause, and reset a 25-minute focus timer, show the remaining time, "
+            "and persist timer state with localStorage. Inspect and verify your files, "
+            "then run `node --check app.js` with run_sandbox_command and fix any errors. "
+            "Do not claim completion unless the syntax check succeeds."
+        ),
+        check=None,
+        full_turn=True,
     ),
 ]
 
@@ -372,7 +601,7 @@ def _splash() -> None:
     console.print(
         Align.center(
             Text(
-                "Offline Evaluation Harness  ·  Tool-Calling Accuracy Suite",
+                "Model Evaluation  ·  Tool Selection + Full-Turn App Quality",
                 style=f"italic {PALETTE['muted']}",
             )
         )
@@ -484,7 +713,10 @@ def _print_summary_table(cases: list[EvalCase]) -> None:
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Hamster Offline Evaluation Harness — tests model tool-calling accuracy.",
+        description=(
+            "Hamster model evaluation suite — tool selection and full-turn "
+            "application quality."
+        ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument(
@@ -547,22 +779,37 @@ def main() -> None:
                 spinner="dots",
             ):
                 t0 = time.monotonic()
-                response = _call_openrouter(
-                    api_key, model, messages, max_tokens=max_tokens
-                )
+                if case.full_turn:
+                    passed, detail, _ = _run_application_quality_eval(
+                        api_key,
+                        model,
+                        case.prompt,
+                        max_tokens=max(max_tokens, 2500),
+                    )
+                    case.result_tool_used = "full agent turn"
+                else:
+                    response = _call_openrouter(
+                        api_key, model, messages, max_tokens=max_tokens
+                    )
+                    tool_call = _extract_first_tool_call(response)
+                    text = _extract_text_content(response)
+                    case.result_tool_used = tool_call["name"] if tool_call else ""
+                    passed, detail = case.check(tool_call, text)
                 elapsed = time.monotonic() - t0
 
-            tool_call = _extract_first_tool_call(response)
-            text = _extract_text_content(response)
-
-            case.result_tool_used = tool_call["name"] if tool_call else ""
-            passed, detail = case.check(tool_call, text)
             case.result_passed = passed
             case.result_detail = detail
 
             console.print(f"  [dim]↳ API response in {elapsed:.2f}s[/dim]")
 
-        except (requests.RequestException, ValueError, TypeError, KeyError) as exc:
+        except (
+            OSError,
+            requests.RequestException,
+            RuntimeError,
+            ValueError,
+            TypeError,
+            KeyError,
+        ) as exc:
             case.error = f"{type(exc).__name__}: {exc}"
 
         _print_case_result(case)

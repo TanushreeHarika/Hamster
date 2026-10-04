@@ -9,7 +9,7 @@ Covers:
 - is_whitelisted_binary
 - LSPDaemon is importable and can be instantiated without a running server
 - TempSandbox _IGNORED_ENTRIES consistency
-- _looks_like_plan planning detector in agent.py
+- task-aware implementation request classifier in agent.py
 """
 
 import platform
@@ -314,48 +314,31 @@ class TestSandboxIgnoredEntries(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
-# 8. _looks_like_plan planning detector
+# 8. Task-aware implementation classifier
 # ---------------------------------------------------------------------------
 
 
-class TestLooksLikePlan(unittest.TestCase):
+class TestRequiresImplementation(unittest.TestCase):
     def _fn(self):
-        from hamster.agent import _looks_like_plan
+        from hamster.agent import _requires_implementation
 
-        return _looks_like_plan
+        return _requires_implementation
 
-    def test_short_response_is_not_a_plan(self) -> None:
+    def test_plain_question_does_not_require_implementation(self) -> None:
         fn = self._fn()
-        self.assertFalse(fn("Sure, I'll help."))
+        self.assertFalse(fn("How does this authentication flow work?"))
 
-    def test_numbered_steps_is_a_plan(self) -> None:
+    def test_build_request_requires_implementation(self) -> None:
         fn = self._fn()
-        content = (
-            "Here is my plan:\n"
-            "Step 1: Read the file\n"
-            "Step 2: Apply the patch\n"
-            "Step 3: Verify the change\n"
-        )
-        self.assertTrue(fn(content))
+        self.assertTrue(fn("Build a responsive settings page."))
 
-    def test_markdown_plan_heading(self) -> None:
+    def test_edit_request_requires_implementation(self) -> None:
         fn = self._fn()
-        content = (
-            "## Plan\n\n"
-            "1. Search for the function\n"
-            "2. Edit the function\n"
-            "3. Run the tests\n"
-        )
-        self.assertTrue(fn(content))
+        self.assertTrue(fn("Please rename this function and update its tests."))
 
-    def test_empty_string_is_not_a_plan(self) -> None:
+    def test_empty_request_does_not_require_implementation(self) -> None:
         fn = self._fn()
         self.assertFalse(fn(""))
-
-    def test_regular_short_code_response_is_not_a_plan(self) -> None:
-        fn = self._fn()
-        content = "I've updated the file for you."
-        self.assertFalse(fn(content))
 
 
 # ---------------------------------------------------------------------------

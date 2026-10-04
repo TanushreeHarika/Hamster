@@ -1,131 +1,199 @@
 from __future__ import annotations
 
+import json
 import re
 from typing import Any
 
 _TOKEN_PATTERN = re.compile(r"\w+|[\[\]{}()\-.,:;!?/]+")
+_REQUEST_OVERHEAD_TOKENS = 16
 
 
 def lightweight_tokenize(text: str) -> list[str]:
-    """A tiny tokenizer that estimates conversational token usage without external deps."""
-
+    """Estimate conversational token usage without external dependencies."""
     return _TOKEN_PATTERN.findall(text or "")
 
 
 def estimate_tokens(text: str) -> int:
-    tokens = lightweight_tokenize(text)
-    return max(1, len(tokens))
+    return max(1, len(lightweight_tokenize(text)))
 
 
-# ---------------------------------------------------------------------------
-# Tokenizer upgrade: use tiktoken BPE when available
-# ---------------------------------------------------------------------------
-# tiktoken (https://github.com/openai/tiktoken) is an optional dependency.
-# When installed it gives an accurate BPE token count (cl100k_base encoding,
-# which is used by GPT-4 / Claude-equivalent vocab). When absent, the regex
-# tokenizer above is used as a lightweight fallback — no crash, no error.
 try:
     import tiktoken as _tiktoken
 
     _cl100k = _tiktoken.get_encoding("cl100k_base")
 
     def estimate_tokens(text: str) -> int:  # type: ignore[misc]
-        """Estimate tokens using cl100k_base BPE encoding (tiktoken)."""
+        """Estimate tokens with cl100k_base when the optional package is installed."""
         if not text:
             return 1
         return max(1, len(_cl100k.encode(text)))
 
 except ImportError:
-    pass  # estimate_tokens already defined above using the regex fallback
+    pass
 
 
 class CompactContextManager:
-    """Keeps the most important prompts and recent outcomes within a strict token budget."""
+    """Compact request history while preserving tool-call/result groups."""
 
-    def __init__(self, token_budget: int = 4000) -> None:
+    def __init__(
+        self,
+        token_budget: int = 4000,
+        tool_schemas: list[dict[str, Any]] | None = None,
+    ) -> None:
         self.token_budget = token_budget
+        self.tool_schemas = tool_schemas or []
+
+    def _token_cost(self, messages: list[dict[str, Any]]) -> int:
+        serialized_messages = json.dumps(messages, ensure_ascii=False, separators=(",", ":"))
+        serialized_tools = json.dumps(
+            self.tool_schemas, ensure_ascii=False, separators=(",", ":")
+        )
+        return (
+            estimate_tokens(serialized_messages)
+            + (estimate_tokens(serialized_tools) if self.tool_schemas else 0)
+            + _REQUEST_OVERHEAD_TOKENS
+        )
+
+    @staticmethod
+    def _group_history(
+        messages: list[dict[str, Any]],
+    ) -> tuple[list[dict[str, Any]], list[list[dict[str, Any]]]]:
+        system_messages = [msg for msg in messages if msg.get("role") == "system"]
+        history = [msg for msg in messages if msg.get("role") != "system"]
+        groups: list[list[dict[str, Any]]] = []
+        index = 0
+
+        while index < len(history):
+            message = history[index]
+            group = [message]
+            index += 1
+            calls = message.get("tool_calls") if message.get("role") == "assistant" else None
+            if calls:
+                pending_ids = {
+                    call.get("id") for call in calls if call.get("id") is not None
+                }
+                while pending_ids and index < len(history):
+                    result = history[index]
+                    if (
+                        result.get("role") != "tool"
+                        or result.get("tool_call_id") not in pending_ids
+                    ):
+                        break
+                    group.append(result)
+                    pending_ids.remove(result["tool_call_id"])
+                    index += 1
+            groups.append(group)
+
+        return system_messages, groups
+
+    @staticmethod
+    def _shorten_message(
+        message: dict[str, Any], limit: int, *, preserve: bool = False
+    ) -> dict[str, Any]:
+        if preserve or message.get("tool_calls"):
+            return message
+
+        content = message.get("content")
+        if not isinstance(content, str):
+            return message
+        tokens = lightweight_tokenize(content)
+        if len(tokens) <= limit:
+            return message
+
+        shortened = " ".join(tokens[:limit])
+        if len(tokens) > limit:
+            shortened += " ..."
+        compacted = dict(message)
+        compacted["content"] = "[condensed] " + shortened
+        return compacted
+
+    def _compact_group(
+        self,
+        group: list[dict[str, Any]],
+        limit: int,
+        *,
+        preserve_user: bool,
+    ) -> list[dict[str, Any]]:
+        return [
+            self._shorten_message(
+                message,
+                limit,
+                preserve=preserve_user and message.get("role") == "user",
+            )
+            for message in group
+        ]
 
     def compact_messages(
         self, messages: list[dict[str, Any]], *, keep_tail: int = 3
     ) -> list[dict[str, Any]]:
         if not messages:
             return []
-
-        estimated = sum(
-            estimate_tokens(str(message.get("content", ""))) for message in messages
-        )
-        if estimated <= self.token_budget:
+        if self._token_cost(messages) <= self.token_budget:
             return messages
 
-        system_messages = [
-            message for message in messages if message.get("role") == "system"
-        ]
-        tail_messages = messages[-keep_tail:]
-        middle_messages = [
-            message
-            for message in messages
-            if message not in system_messages and message not in tail_messages
-        ]
+        system_messages, groups = self._group_history(messages)
+        if not groups:
+            if self._token_cost(system_messages) > self.token_budget:
+                raise ValueError("System prompt and tool schemas exceed the context budget.")
+            return system_messages
 
-        collapsed: list[dict[str, Any]] = []
-        collapsed.extend(system_messages)
+        latest_user_group = next(
+            (
+                index
+                for index in range(len(groups) - 1, -1, -1)
+                if any(msg.get("role") == "user" for msg in groups[index])
+            ),
+            len(groups) - 1,
+        )
+        protected = set(range(max(0, len(groups) - keep_tail), len(groups)))
+        protected.add(latest_user_group)
 
-        for message in middle_messages:
-            collapsed.append(self._compress_middle_message(message))
-
-        collapsed.extend(tail_messages)
-        return collapsed
-
-    def _compress_middle_message(self, message: dict[str, Any]) -> dict[str, Any]:
-        """Return a compacted copy of a middle-history message.
-
-        Rules:
-        - ``tool`` messages must keep ``tool_call_id`` and ``name`` so OpenRouter
-          can match them to the originating assistant tool_call.
-        - ``assistant`` messages that carry ``tool_calls`` are collapsed to a plain
-          summary string; stripping the ``tool_calls`` list avoids dangling-reference
-          errors when the paired tool result is also being compacted.
-        - All other messages are truncated to 80 tokens with a prefix note.
-        """
-        role = message.get("role", "assistant")
-        content = str(message.get("content") or "")
-        tokens = lightweight_tokenize(content)
-
-        # tool messages: always keep required pairing fields
-        if role == "tool":
-            compressed: dict[str, Any] = {
-                "role": "tool",
-                "tool_call_id": message.get("tool_call_id", ""),
-                "name": message.get("name", ""),
-                "content": (
-                    content
-                    if len(tokens) <= 120
-                    else "[condensed] " + " ".join(tokens[:80]) + " ..."
-                ),
-            }
-            return compressed
-
-        # assistant messages with tool_calls: collapse to a plain summary
-        if role == "assistant" and message.get("tool_calls"):
-            tool_names = ", ".join(
-                tc.get("function", {}).get("name", "?")
-                for tc in (message.get("tool_calls") or [])
+        compacted_groups = [
+            self._compact_group(
+                group,
+                80,
+                preserve_user=index == latest_user_group,
             )
-            return {
-                "role": "assistant",
-                "content": f"[condensed tool call: {tool_names}]",
-            }
+            for index, group in enumerate(groups)
+        ]
 
-        # everything else: plain text truncation
-        if len(tokens) <= 120:
-            return {"role": role, "content": content}
-        return {
-            "role": role,
-            "content": "[condensed history] " + " ".join(tokens[:80]) + " ...",
-        }
+        def assemble() -> list[dict[str, Any]]:
+            return system_messages + [
+                message for group in compacted_groups for message in group
+            ]
+
+        result = assemble()
+        for index in range(len(compacted_groups)):
+            if self._token_cost(result) <= self.token_budget:
+                return result
+            if index in protected:
+                continue
+            compacted_groups[index] = []
+            result = assemble()
+
+        if self._token_cost(result) <= self.token_budget:
+            return result
+
+        for limit in (40, 20, 10, 1, 0):
+            for index in sorted(protected):
+                compacted_groups[index] = self._compact_group(
+                    compacted_groups[index],
+                    limit,
+                    preserve_user=index == latest_user_group,
+                )
+            result = assemble()
+            if self._token_cost(result) <= self.token_budget:
+                return result
+
+        raise ValueError(
+            "Current user request, system prompt, and tool schemas exceed the context budget."
+        )
 
 
 def compact_context(
-    messages: list[dict[str, Any]], *, token_budget: int = 4000
+    messages: list[dict[str, Any]],
+    *,
+    token_budget: int = 4000,
+    tool_schemas: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
-    return CompactContextManager(token_budget=token_budget).compact_messages(messages)
+    return CompactContextManager(token_budget, tool_schemas).compact_messages(messages)

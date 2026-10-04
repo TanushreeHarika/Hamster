@@ -10,7 +10,7 @@
 - **Cross-Platform Compatibility**: Fully compatible with **macOS**, **Linux**, and **Windows** (CMD, PowerShell, Git Bash, WSL2).
 - **APFS Fast-Cloning**: On macOS, utilizes APFS copy-on-write (`cp -c`) for instant (<10ms) sandbox instantiation without physically duplicating file contents.
 - **Ephemeral Docker Sandbox Backend**: Command execution delegates to an ephemeral, network-isolated Docker container (`--network=none`, `--memory=256m`, `--cpus=1`) when Docker is present, falling back seamlessly to host process execution.
-- **Two-Stage Planning → Execution Engine**: Automatically detects structured planning responses from the model and injects an execution prompt before invoking tools.
+- **Task-Aware Completion Engine**: Keeps implementation planning internal and automatically asks the model to execute a requested change rather than stopping at prose.
 - **Persistent LSP Integration**: Integrates a persistent JSON-RPC 2.0 language server daemon (`pyright-langserver`) for real-time code diagnostics and definition resolution.
 - **Windowed File Reading & Fuzzy Patching**: Supports line-range slicing (`start_line`, `end_line`) for reading large files, and trailing-whitespace-tolerant fuzzy diff matching for edits.
 - **Token Budget Context Compactor**: Built-in context compaction using `tiktoken` BPE token estimation (`cl100k_base`) to maximize context retention without overflowing model limits.
@@ -124,7 +124,16 @@ Hamster implements strict defense-in-depth security:
 Hamster includes a full unit test suite covering sandbox lifecycle, isolation, fuzzy patching, and policy analysis:
 
 ```bash
-uv run python -m unittest discover tests
+uv run pytest
+```
+
+The model evaluation harness includes tool-selection cases and a full-turn web-app
+quality scenario. The latter writes only to a temporary workspace, validates the
+responsive/accessibility/interaction requirements, and runs `node --check` without
+executing generated JavaScript:
+
+```bash
+uv run evals.py
 ```
 
 ---
